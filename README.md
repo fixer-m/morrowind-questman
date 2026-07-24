@@ -3,12 +3,16 @@
 Adds a new in-game menu for keeping track of your quests and journal entries. Press **X** (by default) to open it.
 Allows to search and filter, pin and hide quests, jump between related dialogue topics and much more.
 
-**Requirements:** OpenMW **0.50+**  
-**Included Translations:** English, Russian, Polish  
+> **Requirements:** OpenMW **0.50+**  
+> **Included Translations:** English, Russian, Polish  
 
-**Links:** [Nexus Mod Page](https://www.nexusmods.com/morrowind/mods/59493) | [Release Notes](https://github.com/fixer-m/morrowind-questman/blob/main/CHANGELOG.md) | [Screenshots](https://www.nexusmods.com/morrowind/mods/59493?tab=images)
+<div align="center">
 
-<p align="center"><img src="https://i.imgur.com/Uxcyfyk.png" alt="Questman" /></p>
+## [Nexus Mod Page](https://www.nexusmods.com/morrowind/mods/59493) | [Release Notes](https://github.com/fixer-m/morrowind-questman/blob/main/CHANGELOG.md) | [Screenshots](https://www.nexusmods.com/morrowind/mods/59493?tab=images)
+
+</div>
+
+<div align="center"><img src="https://i.imgur.com/Uxcyfyk.png" alt="Questman" /></div>  
 
 ## Main Features
 
