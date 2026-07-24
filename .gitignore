@@ -1,0 +1,13 @@
+# Only the shipped plugin lives in the repo: src/, tests/, CHANGELOG.md, README.md.
+# Strategy: ignore everything at the repo root, then re-include the tracked paths.
+/*
+
+!/src/
+!/tests/
+!/CHANGELOG.md
+!/README.md
+!/.gitignore
+
+# Dev-only aids that live inside src/ but must NOT be published.
+/src/questman-dev.omwscripts
+/src/Scripts/Questman/dev_features.lua
