@@ -2204,6 +2204,14 @@ applySizes = function()
         local n = node(path)
         if n then n.props = n.props or {}; n.props.size = size end
     end
+    -- Build a node path by appending child names to an existing PATH entry (which already carries the
+    -- 'frame' prefix). Used to reach the side-pane inner nodes that have no dedicated PATH entry.
+    local function subPath(base, ...)
+        local p = {}
+        for _, seg in ipairs(base) do p[#p + 1] = seg end
+        for _, seg in ipairs({ ... }) do p[#p + 1] = seg end
+        return p
+    end
     setSize(v2(s.innerW, s.innerH), PATH.main)
     setSize(v2(s.innerW, TITLE_H), PATH.titlebar)
     setSize(v2(s.innerW, TAB_H), PATH.tabRow)
@@ -2219,11 +2227,35 @@ applySizes = function()
     setSize(v2(BAR_W, s.detailViewH), PATH.detailBar)
     -- search row widens with the pane; the search box (grow) + input (relativeSize) follow automatically
     setSize(v2(s.listW, SEARCH_H), PATH.searchRow)
-    -- Topics columns resize in place too, so a Topics divider drag can move them without a full panes
-    -- rebuild (which would destroy the divider handle mid-drag). No-op on other pages (nodes absent).
-    local topicListW, topicDetailW = topicDims(s)
-    setSize(v2(topicListW, s.contentH), PATH.topicLeftCol)
-    setSize(v2(topicDetailW, s.contentH), PATH.topicDetail)
+    setSize(v2(s.listW, COMBO_H), subPath(PATH.left, 'filterRow'))   -- filter combo stretches like the search box (no-op when hidden)
+    -- Topics / Records: a divider drag skips the full panes rebuild (it would destroy the divider handle
+    -- mid-drag), so reflow the active side-pane page's inner nodes IN PLACE instead -- columns, search box,
+    -- list viewport, status strip and detail all follow the divider live, matching the Quests page. (Window
+    -- resize isn't a drag, so it takes the rebuild path below and never reaches this.)
+    if dividerDrag then
+        local SIDE = {
+            topics = { prefix = 'topic', leftCol = PATH.topicLeftCol, detail = PATH.topicDetail, dims = topicDims,
+                       refreshList = refreshTopicList,
+                       reflowDetail = function(w) buildTopicDetailNodes(allTopics(), w); applyTopicROffset() end },
+            records = { prefix = 'record', leftCol = PATH.recordLeftCol, detail = PATH.recordDetail, dims = records.dims,
+                        refreshList = records.refreshList,
+                        reflowDetail = function(w) records.detailNodes(records.all(), w); records.applyRight() end },
+        }
+        local side = SIDE[activePage]
+        if side then
+            local listW, detailW, listViewH = side.dims(s)
+            local p = side.prefix
+            setSize(v2(listW, s.contentH), side.leftCol)
+            setSize(v2(listW, SEARCH_H), subPath(side.leftCol, p .. 'SearchRow'))
+            setSize(v2(listW, listViewH), subPath(side.leftCol, p .. 'List'))
+            setSize(v2(listW - BAR_W, listViewH), subPath(side.leftCol, p .. 'List', p .. 'ListVp'))
+            setSize(v2(listW, STATUS_H), subPath(side.leftCol, p .. 'Status'))
+            setSize(v2(detailW, s.contentH), side.detail)
+            setSize(v2(detailW - BAR_W, s.contentH), subPath(side.detail, p .. 'DetailVp'))
+            side.refreshList()                  -- re-width the list rows (partial refresh keeps search focus)
+            side.reflowDetail(detailW - BAR_W)  -- re-wrap the detail paragraphs + re-slice at the new width
+        end
+    end
     -- root Widget + resize strips follow the outer size (root is plain-Widget; the 'frame' box autosizes to
     -- main). The strips hug the real window edges/corners via explicit geom (relativeSize won't resolve here).
     local outer = outerSize(s)
