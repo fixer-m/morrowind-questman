@@ -209,15 +209,16 @@ local function giverFor(questId)
     return { id = gid, name = actorName(gid) }
 end
 
--- A record is a "real" quest if it has a name and at least one finishing stage
--- (mirrors questmenu's blacklist of placeholder/fake journal records).
+-- A record is a "real" quest if it has a journal NAME (unnamed journals are the notes surfaced on the
+-- Records tab). Recognition deliberately does NOT also require an `isQuestFinished` stage.
+-- WHY: `info.isQuestFinished` (and isQuestName/questStage) read the info's DATA *type* byte and return nil
+-- unless it equals "Journal". Some French/German "build" ESMs corrupt that byte on
+-- override infos (mType = 0xFFFFFF04 instead of 4), so those properties come back nil and the old finish
+-- check silently dropped the ENTIRE base game. `rec.questName` is derived from mQuestStatus, which stays
+-- intact and matches what the vanilla journal shows, so it's reliable on every build. Consequence:
+-- `finishable` (below) is now true for every named quest -> getOnlyFinishable keeps them all.
 local function isRealQuest(rec)
-    if not rec or not rec.questName or rec.questName == '' then return false end
-    if not rec.infos then return false end
-    for _, info in pairs(rec.infos) do
-        if info.isQuestFinished then return true end
-    end
-    return false
+    return rec ~= nil and rec.questName ~= nil and rec.questName ~= ''
 end
 
 -- Per quest NAME (lowercased): every catalog record id sharing it (sorted for stability) + the name's
@@ -1214,12 +1215,33 @@ local function logDiagnostics(env, quests)
     local journal = types.Player.journal(self)
     local journalEntries = #((journal and journal.journalTextEntries) or {})
 
+    -- RAW engine counts, straight from the data before any Questman recognition/classification. Logged
+    -- FIRST so a bug report shows the gap between what the engine holds and what we surface: a big drop
+    -- from raw -> recognized points at a detection problem. This is exactly the corrupt French/German-build
+    -- symptom (many raw player quest entries, almost none recognized -- see isRealQuest): there, "player
+    -- quest entries" stays high while "Quests started" collapses. Named-catalog vs total-catalog likewise
+    -- flags a classification/data issue when an installed add-on's journals aren't being counted.
+    local rawEntries, rawFinished = 0, 0
+    for _, q in pairs(types.Player.quests(self)) do
+        rawEntries = rawEntries + 1
+        if q.finished then rawFinished = rawFinished + 1 end
+    end
+    local rawRecords, rawNamed = 0, 0
+    for _, rec in pairs(core.dialogue.journal.records) do
+        rawRecords = rawRecords + 1
+        if rec.questName and rec.questName ~= '' then rawNamed = rawNamed + 1 end
+    end
+    local rawTopics = 0
+    for _ in pairs((journal and journal.topics) or {}) do rawTopics = rawTopics + 1 end
+
     local function line(s) print('[questman]', s) end
     if env and env.screenW then
         local scale = (env.logicalW and env.logicalW > 0) and (env.screenW / env.logicalW) or 1
         line(('Player screen: %.0fx%.0f (%.0fx%.0f), GUI scale %.2f')
             :format(env.screenW, env.screenH, env.logicalW or 0, env.logicalH or 0, scale))
     end
+    line(('Raw: %d player quest entries (%d finished); catalog %d journal records (%d named); %d heard topics')
+        :format(rawEntries, rawFinished, rawRecords, rawNamed, rawTopics))
     line(('Quests: %d started, %d finished, %d total'):format(#quests, finished, catTotal))
     line(('Topics: %d. Journal entries: %d'):format(#topics, journalEntries))
 end
