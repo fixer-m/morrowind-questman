@@ -2,9 +2,9 @@
 
 All notable changes to Questman. One line per change — `[New]` feature, `[Change]` behaviour/looks, `[Fix]` bug fix.
 
-## 1.4 - In Progress
+## 1.4
 
-- **[New]** Records tab — a new tab that collects journal entries the vanilla journal shows but that aren't quests (no quest name): East Empire Company colony logs, faction rules, Threads of the Webspinner, Imperial Cult notes, and even a few nameless questlines like "Blood Ties". Grouped per record, entries shown newest-first with their in-game date, with a search box.
+- **[New]** Records tab - a new tab that collects journal entries the vanilla journal shows but that aren't quests (no quest name): East Empire Company colony logs, faction rules, Threads of the Webspinner, Imperial Cult notes, and even a few nameless questlines like "Blood Ties". Grouped per record, entries shown newest-first with their in-game date, with a search box.
 - **[Change]** Dragging the list/detail divider now resizes the panes live as you drag on every tab (Quests, Topics, Records) — the search box, list and details follow the divider instead of only snapping into place on release.
 - **[Fix]** Russian: the "Related topics" list now detects topics that appear in a declined case (e.g. "озеру Фьялдинг", "Корстом Ветроглазым") — previously only topics written in their exact base form were found, so many links were missed. Cyrillic topic matching is also now case-insensitive.
 - **[Fix]** Quests could be completely missing on some French/German Morrowind versions due to malformed ESM file. The way quests are recognized was sligtly changed to fix this issue. 
