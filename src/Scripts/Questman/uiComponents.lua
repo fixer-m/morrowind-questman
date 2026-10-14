@@ -22,6 +22,13 @@ M.HIGHLIGHT = HIGHLIGHT
 M.GREEN = GREEN
 M.YELLOW = YELLOW
 
+-- util.color -> "RRGGBB" for inline MyGUI colour codes (#RRGGBB) that colour a span inside one Text.
+function M.colorHex(c)
+    local v = c:asRgb()
+    return ('%02X%02X%02X'):format(
+        math.floor(v.x * 255 + 0.5), math.floor(v.y * 255 + 0.5), math.floor(v.z * 255 + 0.5))
+end
+
 -- Native MW_Button font colours, pulled from the SAME GMSTs the engine's button skin uses
 -- (FontColor_color_normal / _normal_over / _active / _active_over). Memoised; GMSTs need a loaded
 -- game, so we resolve lazily on first button build (in-game) with safe fallbacks.
@@ -257,7 +264,7 @@ function M.labelValue(label, value, labelColor, onClick)
 end
 
 -- Static-label colour (dark brown) — distinctive on the dark panel and reads as a caption vs the value.
-M.LABEL_COLOR = hex('cc893e')
+M.LABEL_COLOR = hex('cc7d3e')
 
 --- A header line (bigger).
 function M.header(text)
@@ -273,11 +280,6 @@ function M.paragraph(text, width)
         template = I.MWUI.templates.textParagraph,
         props = { text = text or '', size = v2(width or 300, 0) },
     }
-end
-
---- A numbered journal entry.
-function M.entry(index, text, width)
-    return M.paragraph(('%d. %s'):format(index, text or ''), width)
 end
 
 --- Fixed single-line search box. `onChange(text)` fires on every keystroke.

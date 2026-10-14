@@ -53,6 +53,7 @@ local BY_FACTION = {
     ['House Hlaalu']        = 'gh_hlalu.dds',
     ['House Redoran']       = 'gh_redoran.dds',
     ['House Telvanni']      = 'gh_telvanni.dds',
+    ['House Indoril']       = 'gh_indoril.dds',   -- Tamriel Rebuilt (map 3)
     ['Fighters Guild']      = 'fa_fighters.dds',
     ['Mages Guild']         = 'fa_mages.dds',
     ['Thieves Guild']       = 'fa_thieves.dds',
@@ -62,6 +63,7 @@ local BY_FACTION = {
     ['Imperial Cult']       = 'fa_imp_cult.dds',
     ['Morag Tong']          = 'fa_morag_tong.dds',
     ['Ja-Natta Syndicate']  = 'fa_janatta.dds',   -- Tamriel Rebuilt
+    ['Ordinators']          = 'fa_ordinators.dds', -- Tamriel Rebuilt (map 3)
     ['Kingdom of Anvil']    = 'fa_anvil.dds',      -- Project Cyrodiil
     ['Itinerant Priests']   = 'fa_priests.dds',    -- Project Cyrodiil
 }

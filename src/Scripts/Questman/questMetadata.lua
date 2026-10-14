@@ -38,12 +38,14 @@ local factions = {
     ["East Empire Company"] = { id = "East Empire Company",    category = "Guild Faction Quests" },
     ["Tribunal Temple"]     = { id = "Temple",                 category = "Guild Faction Quests" }, -- FACT id is "Temple"
     ["Ja-Natta Syndicate"]  = { id = "T_Mw_JaNattaSyndicate",  category = "Guild Faction Quests" }, -- Tamriel Rebuilt
+    ["Ordinators"]          = { id = "T_Mw_Ordinators",        category = "Guild Faction Quests" }, -- Tamriel Rebuilt (map 3)
     ["Kingdom of Anvil"]    = { id = "T_Cyr_KingdomAnvil",     category = "Guild Faction Quests" }, -- Project Cyrodiil
     ["Itinerant Priests"]   = { id = "T_Cyr_ItinerantPriests", category = "Guild Faction Quests" }, -- Project Cyrodiil
     -- Great Houses
     ["House Hlaalu"]        = { id = "Hlaalu",                 category = "Great House Quests" },
     ["House Redoran"]       = { id = "Redoran",                category = "Great House Quests" },
     ["House Telvanni"]      = { id = "Telvanni",               category = "Great House Quests" },
+    ["House Indoril"]       = { id = "T_Mw_HouseIndoril",      category = "Great House Quests" }, -- Tamriel Rebuilt (map 3)
 }
 
 -- Main-quest finale(s) per add-on: completing any listed id marks that add-on's main quest as done
@@ -69,6 +71,8 @@ local tamrielRebuiltRules = {
         { pattern = "_hh[_%d]",  faction  = "House Hlaalu" },
         { pattern = "_hr[_%d]",  faction  = "House Redoran" },
         { pattern = "_ht[_%d]",  faction  = "House Telvanni" },
+        { pattern = "_hi[_%d]",  faction  = "House Indoril" }, -- TR_m3_HI_* (Almalexia questline)
+        { pattern = "_ord[_%d]", faction  = "Ordinators" },   -- TR_m3_Ord_* / TR_m4_Ord_Rite
         { pattern = "_eec[_%d]", faction  = "East Empire Company" },
         { pattern = "_fg[_%d]",  faction  = "Fighters Guild" },
         { pattern = "_ic[_%d]",  faction  = "Imperial Cult" },

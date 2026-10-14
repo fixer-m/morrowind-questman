@@ -583,6 +583,17 @@ local function buildLeft(s)
     }
 end
 
+-- Vanilla-journal-style timestamp for a journal entry: "<dayOfMonth> <month> (<Day> <elapsed day>)", or
+-- nil when the entry carries no date. Month names come from OpenMW's Calendar l10n context; the "Day"
+-- word from the sDay GMST -- matching what the vanilla journal prints. Shared by the Quests and Records
+-- detail panes so both timestamps read identically.
+local function entryDateLabel(e)
+    if not (e.month and e.dayOfMonth) then return nil end
+    local dayWord = core.getGMST('sDay')
+    return ('%d %s (%s %d)'):format(
+        e.dayOfMonth, records.calendar('month' .. tostring(e.month)), tostring(dayWord), e.day or 0)
+end
+
 -- ---- right pane: category + entries ----------------------------------------
 local function buildDetailContent(s)
     if not selectedId then
@@ -663,11 +674,19 @@ local function buildDetailContent(s)
     if #entries > 0 then
         push(components.subtitle(l10n('journal_entries_label')), LINE_ROW)
         push({ props = { size = v2(0, PAD) } }, PAD)
-        -- Newest entry first, numbered high-to-low (the player reads the latest progress at the top).
+        -- Newest entry first (the player reads the latest progress at the top). Each entry is preceded by
+        -- its in-game date (brown, vanilla-journal style), mirroring the Records tab.
+        local brownHex = components.colorHex(components.LABEL_COLOR)
+        local W = s.detailVpW - PAD
         for i = #entries, 1, -1 do
-            local text = entries[i].text or ''
-            push(components.entry(i, text, s.detailVpW - PAD),
-                uiScroll.estimateTextHeight(('%d. %s'):format(i, text), s.detailVpW - PAD) + 2)
+            local e = entries[i]
+            local dateLabel = entryDateLabel(e)
+            if dateLabel then
+                push(components.paragraph(('#%s%s'):format(brownHex, dateLabel), W),
+                     uiScroll.estimateTextHeight(dateLabel, W) + 2)
+            end
+            local text = e.text or ''
+            push(components.paragraph(text, W), uiScroll.estimateTextHeight(text, W) + 2)
             push({ props = { size = v2(0, ENTRY_GAP) } }, ENTRY_GAP)   -- small gap between entries
         end
     end
@@ -1450,13 +1469,6 @@ local function buildTopicSlice(topics, offset, viewH, W)
     return nodes
 end
 
--- util.color -> "RRGGBB" for inline MyGUI colour codes (#RRGGBB) that colour a span inside one Text.
-local function colorHex(c)
-    local v = c:asRgb()
-    return ('%02X%02X%02X'):format(
-        math.floor(v.x * 255 + 0.5), math.floor(v.y * 255 + 0.5), math.floor(v.z * 255 + 0.5))
-end
-
 -- RIGHT: selected topic -> name title + its distinct conversation lines (speaker label + text). `topics`
 -- is the UNFILTERED list (the detail survives an active search). Sets topicRContentH.
 local function buildTopicDetailNodes(topics, W)
@@ -1475,7 +1487,7 @@ local function buildTopicDetailNodes(topics, W)
     -- from the SAME speaker collapse under a single name label -- the name is only re-printed when the
     -- speaker changes. MyGUI parses #RRGGBB codes inside Text and getTopicLines strips '#', so the inline
     -- colour code on the name is safe.
-    local brownHex = colorHex(components.LABEL_COLOR)
+    local brownHex = components.colorHex(components.LABEL_COLOR)
     -- Newest line first, mirroring the quest detail's reversed iteration. Topic entries carry no timestamp
     -- (PlayerJournalTopicEntry is only text/actor), so true recency sorting isn't possible -- we reverse the
     -- engine's natural accumulation order (oldest -> newest). Grouping is over THIS display order, so
@@ -1743,15 +1755,12 @@ function records.detailNodes(list, W)
     local function push(node, height) nodes[#nodes + 1] = { node = node, h = height }; h = h + height end
     push(components.header(sel.name), TITLE_H)
     push({ props = { size = v2(0, PAD) } }, PAD)
-    local brownHex = colorHex(components.LABEL_COLOR)
-    local dayWord = core.getGMST('sDay')   -- the game's own "Day" word, like the vanilla journal's #{sDay}
+    local brownHex = components.colorHex(components.LABEL_COLOR)
     local entries = sel.entries or {}
     for i = #entries, 1, -1 do          -- newest-first, mirroring the quest/topic detail
         local e = entries[i]
-        if e.month and e.dayOfMonth then
-            -- Matches the vanilla journal timestamp: "<dayOfMonth> <month> (<Day> <elapsed day>)".
-            local dateLabel = ('%d %s (%s %d)'):format(
-                e.dayOfMonth, records.calendar('month' .. tostring(e.month)), tostring(dayWord), e.day or 0)
+        local dateLabel = entryDateLabel(e)
+        if dateLabel then
             push(components.paragraph(('#%s%s'):format(brownHex, dateLabel), W),
                  uiScroll.estimateTextHeight(dateLabel, W) + 2)
         end

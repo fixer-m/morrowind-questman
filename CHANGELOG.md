@@ -2,12 +2,18 @@
 
 All notable changes to Questman. One line per change — `[New]` feature, `[Change]` behaviour/looks, `[Fix]` bug fix.
 
+## 1.5
+
+- **[New]** Added support for "Poison Song" (Tamriel Rebuilt 26.08 Update). Two new factions: House Indoril and the Ordinators are now recognised and sorted into their own groups, each with a dedicated icon and its own row on the Stats page.
+- **[Change]** Quests detail: each journal entry now shows its in-game date above the text (like the Records tab), instead of a plain number.
+- **[Change]** Small UI tweak: the detail-pane labels (Category / Faction / entry dates) use a slightly warmer, more reddish tone.
+
 ## 1.4
 
 - **[New]** Records tab - a new tab that collects journal entries the vanilla journal shows but that aren't quests (no quest name): East Empire Company colony logs, faction rules, Threads of the Webspinner, Imperial Cult notes, and even a few nameless questlines like "Blood Ties". Grouped per record, entries shown newest-first with their in-game date, with a search box.
 - **[Change]** Dragging the list/detail divider now resizes the panes live as you drag on every tab (Quests, Topics, Records) — the search box, list and details follow the divider instead of only snapping into place on release.
 - **[Fix]** Russian: the "Related topics" list now detects topics that appear in a declined case (e.g. "озеру Фьялдинг", "Корстом Ветроглазым") — previously only topics written in their exact base form were found, so many links were missed. Cyrillic topic matching is also now case-insensitive.
-- **[Fix]** Quests could be completely missing on some French/German Morrowind versions due to malformed ESM file. The way quests are recognized was sligtly changed to fix this issue. 
+- **[Fix]** Quests could be completely missing on some French/German Morrowind versions due to malformed ESM file. The way quests are recognized was slightly changed to fix this issue. 
 
 ## 1.3
 

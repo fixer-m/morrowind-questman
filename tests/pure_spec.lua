@@ -61,6 +61,13 @@ check('ms_vampirecure -> Morrowind Misc (questdb bug fix)', (function() local m 
 check('TR RR_MQ override -> Telvanni / TR', (function() local m = meta('tr_m1_rr_mq_1')
     return m.addon == 'tamriel_rebuilt' and m.faction == 'House Telvanni' end)())
 check('TR MGBonus glued override -> Mages Guild', meta('tr_m3_at_mgbonus').faction == 'Mages Guild')
+check('TR _HI_ -> House Indoril / Great House', (function() local m = meta('tr_m3_hi_roadyr1')
+    return m.addon == 'tamriel_rebuilt' and m.category == 'Great House Quests'
+       and m.faction == 'House Indoril' and m.factionId == 'T_Mw_HouseIndoril' end)())
+check('TR _Ord_ -> Ordinators / Guild Faction', (function() local m = meta('tr_m3_ord_watch1')
+    return m.addon == 'tamriel_rebuilt' and m.category == 'Guild Faction Quests'
+       and m.faction == 'Ordinators' and m.factionId == 'T_Mw_Ordinators' end)())
+check('TR m4 Ord_Rite -> Ordinators', meta('tr_m4_ord_rite').faction == 'Ordinators')
 check('TR tt_q1 override -> Temple factionId', (function() local m = meta('tr_tt_q1')
     return m.addon == 'tamriel_rebuilt' and m.faction == 'Tribunal Temple' and m.factionId == 'Temple' end)())
 -- Project Cyrodiil: add-on faction keeps its real FACT id
