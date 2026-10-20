@@ -1,5 +1,6 @@
--- questman: menu UI (PLAYER context). A draggable, resizable window with three tabs (Quests / Topics / Stats): a searchable,
--- scrollable list on the left and the selected item's detail on the right. Refresh mutates named content nodes + element:update()
+-- questman: menu UI (PLAYER context). A draggable, resizable window with four tabs (Quests / Topics / Journal /
+-- Progress): Quests and Topics are a searchable, scrollable list on the left and the selected item's detail on the
+-- right; Journal is the whole journal as one feed; Progress is the completion stats. Refresh mutates named content nodes + element:update()
 -- (the omw/settings pattern); scrolling is hand-rolled clip+offset. Consumes the QuestmanData interface (questProvider.lua).
 
 local ui = require('openmw.ui')
@@ -15,6 +16,7 @@ local uiSearch = require('scripts.questman.uiSearch')
 local uiScroll = require('scripts.questman.uiScroll')
 local uiResize = require('scripts.questman.uiResize')
 local questList = require('scripts.questman.questList')
+local journalFeed = require('scripts.questman.journalFeed')
 
 local v2 = util.vector2
 local l10n = core.l10n('Questman')
@@ -43,76 +45,11 @@ local function dbg(...)
 end
 
 -- ---- layout constants ------------------------------------------------------
-local PAD = 8
-local TITLE_H = 20
-local TAB_H = 28     -- page-tab band (Quests / Stats), under the title
-local TAB_GAP = 4    -- spacing between adjacent page tabs (tabs sit flush with the left edge)
-local SEARCH_H = 24   -- search row height (icon is 22, so this is the practical minimum)
-local BAR_W = 16     -- scrollbar width
-local ARROW_H = 19   -- arrow-zone height = BAR_W + scrollbar GAP(3), so the arrow box is square (see
-                     -- uiComponents M.scrollbar); the thumb travels between the two zones [ARROW_H, h-ARROW_H]
-local ROW_H = 28
--- Tightened ~one-text-line row pitch (no inter-row gap): the topic list (long 877+ index) and the
--- "Related topics" link rows on both detail panes. Default font kept; 18px ≈ the line height, which is
--- the floor before glyphs start to clip.
-local TPC_ROW_H = 18
-local VLIST_BUFFER = 4   -- virtualized lists (quests + topics): rows rendered above/below the viewport
-local STATUS_H = 18      -- slim status strip under the list (holds the shown/total counter)
-local ICON_SZ = 24       -- quest icon AND search icon size (must match, so they align vertically)
-local ICON_MARGIN = 2    -- left margin from the pane border to the icon
-local FOOTER_H = 36      -- bottom button bar height (fits a standard button + margins)
-local FOOTER_GAP = 6     -- Close button inset from the footer's right edge (≈ its top/bottom gap)
+local L = require('scripts.questman.uiLayout')   -- sizes/gaps/icon paths, all as L.NAME
+
 -- Fraction of the inner width taken by the LEFT (list) pane, per page. Defaults mirror the settings
 -- (Quest/Topic list width %); loaded from settings on open, mutated live by the divider drag, saved back.
 local questListFrac, topicListFrac = 0.4, 0.3
-local MIN_W, MIN_H = 520, 320
-local DETAIL_GAP = 4    -- gap before the detail pane; smaller than PAD so detail text sits a few px further left
-local DETAIL_DY = 2     -- detail content nudged down this many px
-local ENTRY_GAP = 6     -- vertical gap between numbered journal entries in the quest detail
-local LINE_ROW = 20     -- content-height allowance for a SINGLE-line detail row (category/giver/subtitle);
-                        -- ROW_H(26) is the list-row height and over-reserves here -> spurious scrollbar
-local SCROLL_SLACK = 16 -- detail/topic panes: hide the scrollbar unless content overflows by more than this
-                        -- (their height is estimated; absorbs a few px of rounding so a fitting quest = no bar)
-local WHEEL_STEP = ROW_H * 2
-
--- Row markers shown before the name. A hidden quest shows the crossed-eye; else a pinned quest shows
--- the star; otherwise no marker (title stays flush against the quest icon).
-local PIN_ICON = 'Icons/questman/ui_star.dds'
-local HIDDEN_ICON = 'Icons/questman/ui_hidden.dds'
-
--- Filtering: the funnel REPLACES the search magnifier (same 22px slot). Clicking it toggles a thin
--- FilterDropDown combo row under the search box; clicking THAT opens the options as a floating popover
--- (a separate Element on an interactive layer above the window) that overlays the list. See §filter.
-local FILTER_ICON = 'Icons/questman/ui_filter.dds'
-local FILTER_ARROW = 'textures/omw_menu_scroll_down.dds'   -- ⇓ on the combo box (the font has no chevron glyph)
-local COMBO_H = SEARCH_H      -- the FilterDropDown combo-box row height = the search box height (match)
-local FILTER_POPUP_H = 220    -- max height of the floating options popover (it scrolls past this)
-local FILTER_ROW_H = 17       -- option row height in the popover (tight)
-local FILTER_HDR_H = 19       -- section-header row height in the popover
-local STATUS_EYE = 12         -- small crossed-eye icon on the status strip (smaller than the 14px row marker)
-local POPUP_LAYER = 'QuestmanFilterPopup'   -- interactive layer (above 'Windows') hosting the options popover
-local DIV = 2                 -- approx height of a horizontalLine divider (for popover y-placement math)
-
--- Stats page metrics (compact rows; numbers align in a fixed column near the labels). Tunable.
-local STAT_ROW = 28          -- stat row height. Needs >=2px margin around the ICON_SZ=22 row icon: at only
-                             -- 24 (1px) a non-integer GUI scale rounds the margin away and clips the icon
-                             -- (seen on the English install, whose scale differs from the Russian one)
-local STAT_ICON_GAP = 4      -- gap between a row's icon and its label
-local STAT_ICON_ZOOM = 64    -- Stats-page only: hovering a row icon shows it at its NATIVE 64px size (crisp
-                            -- 1:1 regardless of GUI scale). This is the icons' real resolution — the max sharp size.
-local STAT_HEADER_H = 24     -- section header row height
-local STAT_VALUE_W = 85      -- right-aligned "N / N" column, tuned snug around a 4-digit "9999 / 9999"
-                            -- (heavily modded totals). MW's font is PROPORTIONAL and digits are wide, and the
-                            -- box clips, so don't go below what "9999 / 9999" needs or a leading digit gets cut.
-local STAT_LABEL_W = 203     -- label column, tuned tight to the longest localized name ("Восточная Имп.
-                            -- Кампания:") so the numbers sit right after it. STATIC — fixed column width (below),
-                            -- so labels + numbers stay put regardless of window size. A name that just clips
-                            -- still shows in full on hover (tooltip); nudge this up if a real name overflows.
-local STAT_CHECK_W = 22      -- reserve at a row's right edge for the ✓ (small gap + 14px tick + a hair of pad)
-local STAT_COL_GAP = 6       -- horizontal gap between the two static stat columns
-local STAT_TICK = 'Icons/questman/ui_check_mark.dds'   -- main-quest-finished checkmark
-local STAT_ICON_ACTIVE = 'Icons/questman/ui_in_progress.dds'   -- Overview "Active" row icon
-local STAT_ICON_DONE   = 'Icons/questman/ui_completed.dds'     -- Overview "Completed" row icon
 
 -- ---- state -----------------------------------------------------------------
 -- Lifecycle-owned state — driven only by the open / close / UI-modes section far below (search
@@ -124,10 +61,31 @@ local overrideMenuOpen = false    -- true when opened via the Journal override: 
                                   -- 'Journal' UI mode, so teardown goes through the registerWindow hideFn
                                   -- (not our own removeMode('Interface'))
 local selectedId = nil
-local currentOrder = {}     -- the quests as currently displayed (filtered+sorted), for keyboard nav
+-- The quest list as currently displayed, in one table (the main chunk is at Lua 5.1's 200-local cap,
+-- see `journal`).
+-- order = the list rows in display order (filtered+sorted+searched): quests plus, when grouped, the group
+-- header rows ({ header = label }); drives drawing and scrolling. quests = the same without the headers:
+-- drives keyboard nav and the counter.
+local questView = {
+    order = {},
+    quests = {},
+    -- The list order, picked in the sort popover (opened by the sort button next to the funnel). Persists per
+    -- save.
+    SORT_MODES = { 'date', 'name', 'faction', 'category', 'faction_category' },
+    sortMode = 'date',
+}
+
+-- A quest's searchable body: its seen journal entries (already sanitized of @/# markup by questProvider).
+-- One stable function so uiSearch's per-item text cache is reused across list refreshes.
+function questView.searchText(quest)
+    local parts = {}
+    for i, e in ipairs(quest.entries or {}) do parts[i] = e.text or '' end
+    return table.concat(parts, '\n')
+end
 local lastQuests = nil      -- the raw (unfiltered) getQuests() list from the last quest-page build; reused
                             -- by the deferred first-open diagnostics so they don't scan the save a 2nd time
-local listTotal = 0         -- total real quests (before the completed/search filters) for the footer counter
+local listTotal = 0         -- quests in the filtered scope (before the completed/hidden/search filters): the
+                            -- status strip's "shown / total" denominator
 local query = ''
 local listOffset, detailOffset = 0, 0
 local listContentH, detailContentH = 0, 0
@@ -139,42 +97,52 @@ local selectedTopic = nil                   -- selected topic id
 local topicQuery = ''                        -- search text for the Topics-page list
 local topicListCache                         -- current filtered view of the topic list (search results)
 
--- Records page state AND view functions live in ONE table (keeps ui.lua's main chunk under Lua 5.1's
--- 200-local cap; structurally a near-clone of the Topics page). Fields assigned below.
-local records = {
-    lOffset = 0, lContentH = 0,   -- LEFT record list scroll
-    rOffset = 0, rContentH = 0,   -- RIGHT record detail scroll
-    active = 'left',              -- which panel the wheel scrolls
-    selected = nil,               -- selected record id
-    query = '',                   -- search text
-    listCache = nil,              -- filtered list view
-    listFrac = 0.3,               -- LEFT pane width fraction (loaded from RecordListWidthPercent on open)
+-- Journal page state AND view functions live in ONE table (keeps ui.lua's main chunk under Lua 5.1's
+-- 200-local cap). Fields assigned below.
+local journal = {
+    offset = 0, contentH = 0,     -- feed scroll
+    items = nil,                  -- the feed as { kind, entry, h, y } data (journal.buildItems), cached
+    limit = L.JOURNAL_PAGE,       -- newest entries shown; grows by a page at the bottom (journal.scrollBy)
+    more = false,                 -- older entries are left to load
+    shownTop = 0, shownBottom = 0,   -- pixel range the rendered slice covers (journal.sliceNodes)
+    count = 0,                    -- entries shown in the current mode (the mode bar's counter)
+    mode = journalFeed.MODE_ALL,  -- loaded from windowStore on open
     -- OpenMW's built-in Tamriel calendar context (month1..month12), localized per game language -- the same
-    -- source the rest/journal UIs use. Records date-stamp entries from it; we hardcode no month names.
+    -- source the rest/journal UIs use. Entry dates come from it; we hardcode no month names.
     calendar = core.l10n('Calendar'),
 }
 
 -- Full sorted topic list. The heavy journal scan is cached in the DATA layer (getTopics, invalidated per
 -- open), so this is just a thin pass-through — every caller shares the one cached list, re-read fresh on the
--- next open. footerButtons and the Topics page filter from it rather than re-scanning per keystroke.
+-- next open. The Topics page searches it rather than re-scanning per keystroke.
 local function allTopics()
     return I.QuestmanData.getTopics()
 end
--- Full record list (non-quest journal records), newest-activity first. Thin pass-through over the cached
--- DATA-layer scan, like allTopics.
-function records.all()
-    return I.QuestmanData.getRecords()
+-- One stable function so uiSearch's per-item text cache is reused across list refreshes.
+local function topicSearchText(topic)
+    return I.QuestmanData.getTopicSearchText(topic)
+end
+-- The topic list for the current query: name hits (in list order), then text hits, best score first.
+local function searchTopics()
+    -- Bookmarked topics first; name hits keep this order, so they stay on top while searching.
+    local found = uiSearch.search(uiSearch.index(questList.pinnedFirst(allTopics()), topicSearchText), topicQuery)
+    local out = {}
+    for _, t in ipairs(found.byName) do out[#out + 1] = t end
+    for _, t in ipairs(found.byText) do out[#out + 1] = t end
+    return out
 end
 local activePane = 'list'
-local activePage = 'quests'   -- 'quests' | 'topics' | 'stats' — the page-tab selection
+local activePage = 'quests'   -- the page-tab selection, one of PAGES; remembered across opens and game restarts
+local PAGES = { 'quests', 'topics', 'journal', 'stats' }   -- tab order (controller LB/RB cycles through it)
 local showAll = false         -- footer toggle: off = active & non-hidden only; on = also completed + hidden
-local hiddenCount = 0         -- how many real quests are hidden (for the "Hidden: X" strip label)
+local hiddenCount = 0         -- how many real quests are hidden (the status strip's crossed-eye count)
 local filterRowOn = false     -- the FilterDropDown combo row is shown (toggled by the funnel); persists across tabs / reopen
 local selectedFilter = nil    -- active filter { axis, key, label } or nil; cleared when the funnel toggles the row off, else persists across tabs / reopen
 local dividerDrag = false     -- true while dragging the list/detail divider: applySizes resizes in place (no panes rebuild) so the divider handle keeps mouse capture
 local filterOffset, filterContentH = 0, 0   -- options-popover scroll state
-local popupEl = nil           -- the floating options popover (a separate top-level Element), nil when closed
-local popupViewH = 0          -- the popover's viewport height (for scroll clamping)
+local popupEl = nil           -- the floating popover -- filter options or sort orders, one at a time (a separate
+                              -- top-level Element), nil when closed
+local popupViewH = 0          -- the filter popover's viewport height (for scroll clamping)
 
 -- let button hover-recolouring update the menu element. update() can throw "DelayedAction is not
 -- allowed to create another DelayedAction" when a focusLoss fires during teardown (e.g. clicking
@@ -190,34 +158,34 @@ local applyTopicLOffset, applyTopicROffset, rebuildTopics, selectTopic, refreshT
 local scrollPane, applyFilterOffset, rebuildQuestPane, selectFilter, logicalScreen
 local goToPage   -- (page) -> switch tab; used by the clickable Stats rows (defined earlier than goToPage)
 local jumpToFilter   -- (axis, key, label) -> filter the Quests tab by this group; used by Stats rows and detail lines
-local buildComboRow, buildFilterPopup, openFilterPopup, closeFilterPopup, toggleFilterPopup, toggleFilterRow
+local buildComboRow, buildFilterPopup, openFilterPopup, closePopup, toggleFilterPopup, toggleFilterRow
 
 -- Interactive layer (above 'Windows') for the options popover, so it floats over the menu and is
 -- clickable. Created once; insertAfter is idempotent-safe behind the indexOf guard (survives reloadlua).
 pcall(function()
-    if ui.layers.indexOf(POPUP_LAYER) == nil then
-        ui.layers.insertAfter('Windows', POPUP_LAYER, { interactive = true })
+    if ui.layers.indexOf(L.POPUP_LAYER) == nil then
+        ui.layers.insertAfter('Windows', L.POPUP_LAYER, { interactive = true })
     end
 end)
 
 -- ---- sizing ----------------------------------------------------------------
 local function sizes()
-    local innerW = geom.w - 2 * PAD
-    local innerH = geom.h - 2 * PAD
-    local contentH = innerH - TITLE_H - TAB_H - FOOTER_H - 6   -- minus 3 dividers (~2 each)
+    local innerW = geom.w - 2 * L.PAD
+    local innerH = geom.h - 2 * L.PAD
+    local contentH = innerH - L.TITLE_H - L.TAB_H - L.FOOTER_H - 6   -- minus 3 dividers (~2 each)
     local listW = math.max(160, math.floor(innerW * questListFrac))
     -- divider now sticks to the scrollbar (no gap before it); a small gap remains before the detail.
-    local detailW = innerW - listW - DETAIL_GAP - 2  -- one gap + the vertical separator line
+    local detailW = innerW - listW - L.DETAIL_GAP - 2  -- one gap + the vertical separator line
     -- the FilterDropDown combo row (when shown) pushes the list down by one row height
-    local comboH = filterRowOn and COMBO_H or 0
+    local comboH = filterRowOn and L.COMBO_H or 0
     return {
         innerW = innerW, innerH = innerH, contentH = contentH,
         listW = listW, detailW = detailW,
         comboH = comboH,
-        listViewH = contentH - SEARCH_H - STATUS_H - comboH,   -- list sticks under search (+combo); reserve status strip
+        listViewH = contentH - L.SEARCH_H - L.STATUS_H - comboH,   -- list sticks under search (+combo); reserve status strip
         detailViewH = contentH,
-        listVpW = listW - BAR_W,
-        detailVpW = detailW - BAR_W,
+        listVpW = listW - L.BAR_W,
+        detailVpW = detailW - L.BAR_W,
     }
 end
 
@@ -279,15 +247,9 @@ local PATH = {
     topicCounter     = { 'main', 'panes', 'topicsPage', 'topicLeftCol', 'topicStatus', 'topicCounter' },
     topicDetailInner = { 'main', 'panes', 'topicsPage', 'topicDetail', 'topicDetailVp', 'topicDetailInner' },
     topicDetailThumb = { 'main', 'panes', 'topicsPage', 'topicDetail', 'topicDetailBar', 'thumb' },
-    -- Records page: left list + right detail (mirror of the Topics page)
-    recordLeftCol     = { 'main', 'panes', 'recordsPage', 'recordLeftCol' },
-    recordDetail      = { 'main', 'panes', 'recordsPage', 'recordDetail' },
-    recordListInner   = { 'main', 'panes', 'recordsPage', 'recordLeftCol', 'recordList', 'recordListVp', 'recordListInner' },
-    recordListBar     = { 'main', 'panes', 'recordsPage', 'recordLeftCol', 'recordList', 'recordListBar' },
-    recordListThumb   = { 'main', 'panes', 'recordsPage', 'recordLeftCol', 'recordList', 'recordListBar', 'thumb' },
-    recordCounter     = { 'main', 'panes', 'recordsPage', 'recordLeftCol', 'recordStatus', 'recordCounter' },
-    recordDetailInner = { 'main', 'panes', 'recordsPage', 'recordDetail', 'recordDetailVp', 'recordDetailInner' },
-    recordDetailThumb = { 'main', 'panes', 'recordsPage', 'recordDetail', 'recordDetailBar', 'thumb' },
+    -- Journal page: mode bar + one scrollable feed
+    journalFeedInner  = { 'main', 'panes', 'journalPage', 'journalFeed', 'journalFeedVp', 'journalFeedInner' },
+    journalFeedThumb  = { 'main', 'panes', 'journalPage', 'journalFeed', 'journalFeedBar', 'thumb' },
     -- resize strips: direct children of the root (siblings of the 'frame' box)
     rzL = { 'rzL' }, rzR = { 'rzR' }, rzT = { 'rzT' }, rzB = { 'rzB' },
     rzTL = { 'rzTL' }, rzTR = { 'rzTR' }, rzBL = { 'rzBL' }, rzBR = { 'rzBR' },
@@ -330,23 +292,61 @@ end
 -- One quest list row: icon + name + pin/hidden markers, highlighted when selected. Clicking selects.
 local function questRowNode(q)
     local markers = {}                                  -- pinned first, then hidden (both can show)
-    if q.pinned then markers[#markers + 1] = PIN_ICON end
-    if q.hidden then markers[#markers + 1] = HIDDEN_ICON end
-    return components.questRow(q, q.id == selectedId, onSelect, markers, ROW_H, ICON_SZ)
+    if q.pinned then markers[#markers + 1] = L.PIN_ICON end
+    if q.hidden then markers[#markers + 1] = L.HIDDEN_ICON end
+    return components.questRow(q, q.id == selectedId, onSelect, markers, L.ROW_H, L.ICON_SZ)
+end
+
+-- A group header row in the grouped list (faction / category orders): the group name in the header colour. Same height as a
+-- quest row, so the virtualized slice math stays uniform; not clickable and skipped by keyboard nav.
+function questView.headerNode(label)
+    return {
+        type = ui.TYPE.Flex,
+        props = { horizontal = true, arrange = ui.ALIGNMENT.Center },
+        external = { stretch = 1 },
+        content = ui.content {
+            { props = { size = v2(L.ICON_MARGIN + 2, L.ROW_H) } },
+            components.subtitle(label),
+        },
+    }
+end
+
+-- Flatten questList groups into list rows, each group led by its header row.
+function questView.withHeaders(groups)
+    local rows = {}
+    for _, g in ipairs(groups) do
+        local label = g.label
+        if g.key == questList.GROUP_PINNED then label = l10n('group_pinned')
+        elseif g.key == questList.GROUP_NONE then label = l10n('group_no_faction') end
+        rows[#rows + 1] = { header = label }
+        for _, q in ipairs(g.quests) do rows[#rows + 1] = q end
+    end
+    return rows
+end
+
+-- Position of a quest in the displayed rows (headers included), or nil when it isn't shown.
+function questView.rowIndex(id)
+    for i, row in ipairs(questView.order) do
+        if row.id == id then return i end
+    end
+    return nil
 end
 
 -- VIRTUALIZED list body: render only the rows in the viewport (+VLIST_BUFFER), preceded by one spacer the
 -- height of the rows above. Quest rows are heavy (icon + markers), so this keeps the widget count flat as
--- the journal grows. `quests` is the displayed (filtered+sorted) order; `listContentH` (set by the caller)
--- stays the FULL height so the scrollbar is correct. Mirrors buildTopicSlice.
+-- the journal grows. `listContentH` (set by the caller) stays the FULL height so the scrollbar is correct.
+-- Mirrors buildTopicSlice.
 local function buildQuestSlice(quests, offset, viewH)
     local n = #quests
-    local firstVisible = math.floor((offset or 0) / ROW_H) + 1
-    local first = math.max(1, firstVisible - VLIST_BUFFER)
-    local last = math.min(n, firstVisible + math.ceil(viewH / ROW_H) + VLIST_BUFFER)
+    local firstVisible = math.floor((offset or 0) / L.ROW_H) + 1
+    local first = math.max(1, firstVisible - L.VLIST_BUFFER)
+    local last = math.min(n, firstVisible + math.ceil(viewH / L.ROW_H) + L.VLIST_BUFFER)
     local nodes = {}
-    if first > 1 then nodes[#nodes + 1] = { props = { size = v2(0, (first - 1) * ROW_H) } } end
-    for i = first, last do nodes[#nodes + 1] = questRowNode(quests[i]) end
+    if first > 1 then nodes[#nodes + 1] = { props = { size = v2(0, (first - 1) * L.ROW_H) } } end
+    for i = first, last do
+        local row = quests[i]
+        nodes[#nodes + 1] = row.header and questView.headerNode(row.header) or questRowNode(row)
+    end
     return nodes
 end
 
@@ -354,7 +354,7 @@ end
 -- their builders and re-sliced on scroll by buildVarSlice. Layout tables are read-only descriptors the
 -- engine never writes back to (element.cpp setLayout only stores a ref + reads props), so caching and
 -- reusing them across slices is safe.
-local vitems = { detail = {}, topicR = {}, recordR = {} }
+local vitems = { detail = {}, topicR = {} }
 
 -- VIRTUALIZED variable-height body (analog of buildQuestSlice for the uniform lists). `items` is an array
 -- of { node = layout, h = pixel height }. Render only the items intersecting [offset, offset+viewH] (+120px
@@ -380,7 +380,7 @@ end
 local function buildRows(s)
     local quests = I.QuestmanData.getQuests()
     lastQuests = quests   -- retain the raw list (before filtering) for the deferred first-open diagnostics
-    quests = questList.apply(quests, selectedFilter)   -- category filter defines the current scope
+    quests = questList.apply(quests, selectedFilter)   -- the add-on / category / faction filter defines the scope
     listTotal = #quests         -- denominator = the filtered scope, before completed/hidden/search
     hiddenCount = 0
     for _, q in ipairs(quests) do if q.hidden then hiddenCount = hiddenCount + 1 end end
@@ -391,26 +391,48 @@ local function buildRows(s)
         end
         quests = vis
     end
-    -- v1: search by quest NAME only (entry-text/fuzzy search is a later weighted feature).
-    quests = uiSearch.filter(questList.sortDefault(quests), query, { searchEntries = false })
-    currentOrder = quests   -- displayed order: drives keyboard nav, the counter, AND the scroll slices
-    listContentH = #currentOrder * ROW_H                 -- FULL height (drives the scrollbar), not the slice
+    local sorted = (questView.sortMode == 'name') and questList.sortByName(quests) or questList.sortDefault(quests)
+    -- Name hits first (in the chosen order), then quests whose journal text matches, best score first (uiSearch.search).
+    -- No separator between the two: the detail pane highlights the match (title vs. entries) instead.
+    local found = uiSearch.search(uiSearch.index(sorted, questView.searchText), query)
+    local order = {}
+    for _, q in ipairs(found.byName) do order[#order + 1] = q end
+    for _, q in ipairs(found.byText) do order[#order + 1] = q end
+    -- Grouping only without a search: the results are ranked by relevance, and headers would split that ranking.
+    -- A single group (e.g. while filtering by one faction) gets no header -- it would only repeat the filter.
+    local groups = {}
+    local function categoryLabel(cat) return l10n('cat_' .. cat) end
+    local searching = uiSearch.isActive(query)
+    if not searching and questView.sortMode == 'faction' then
+        groups = questList.groupByFaction(order)
+    elseif not searching and questView.sortMode == 'category' then
+        groups = questList.groupByCategory(order, categoryLabel)
+    elseif not searching and questView.sortMode == 'faction_category' then
+        groups = questList.groupByFactionOrCategory(order, categoryLabel)
+    end
+    questView.order = (#groups > 1) and questView.withHeaders(groups) or order
+    -- The quests in DISPLAY order (grouping reorders them), so keyboard nav steps down the list as shown.
+    questView.quests = {}
+    for _, row in ipairs(questView.order) do
+        if not row.header then questView.quests[#questView.quests + 1] = row end
+    end
+    listContentH = #questView.order * L.ROW_H      -- FULL height (drives the scrollbar), not the slice
     listOffset = uiScroll.clamp(listOffset, listContentH, s.listViewH)
-    return buildQuestSlice(currentOrder, listOffset, s.listViewH)
+    return buildQuestSlice(questView.order, listOffset, s.listViewH)
 end
 
 local function listThumb(s)
-    local trackH = s.listViewH - 2 * ARROW_H   -- thumb travels between the arrows
+    local trackH = s.listViewH - 2 * L.ARROW_H   -- thumb travels between the arrows
     local function step(d)
         listOffset = uiScroll.clamp(listOffset + d, listContentH, s.listViewH)
         applyListOffset()
     end
     return components.scrollbar {
-        width = BAR_W, height = s.listViewH, arrowH = ARROW_H,
+        width = L.BAR_W, height = s.listViewH, arrowH = L.ARROW_H,
         thumb = uiScroll.thumb(listContentH, s.listViewH, trackH, listOffset),
         onDrag = function(dy) step(dy * (listContentH / math.max(1, trackH))) end,
-        onStepUp = function() step(-WHEEL_STEP) end,
-        onStepDown = function() step(WHEEL_STEP) end,
+        onStepUp = function() step(-L.WHEEL_STEP) end,
+        onStepDown = function() step(L.WHEEL_STEP) end,
     }
 end
 
@@ -420,7 +442,7 @@ local function statusLeftNodes()
     local nodes = {}
     if hiddenCount > 0 then
         nodes[#nodes + 1] = { type = ui.TYPE.Image,   -- vertically centered by the statusLeft Flex's arrange
-            props = { size = v2(STATUS_EYE, STATUS_EYE), resource = ui.texture { path = HIDDEN_ICON } } }
+            props = { size = v2(L.STATUS_EYE, L.STATUS_EYE), resource = ui.texture { path = L.HIDDEN_ICON } } }
         nodes[#nodes + 1] = { props = { size = v2(3, 0) } }
         nodes[#nodes + 1] = { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
             props = { text = tostring(hiddenCount), textColor = components.GRAY, textSize = 14 } }
@@ -428,49 +450,44 @@ local function statusLeftNodes()
     return nodes
 end
 
-local function buildLeft(s)
-    local rows = buildRows(s)   -- MUST run before listThumb: it sets listContentH (the thumb size input)
-    local listBar = listThumb(s)
-    listBar.name = 'listBar'
-
-    -- Bordered search box. Keep a ref to the input layout so the textChanged handler can write
-    -- its text back; otherwise menu:update() re-syncs the field to the stale layout and blanks it
-    -- (the "typed text invisible / cursor stuck at 0" bug).
-    -- Placeholder is implemented as the input's OWN text (greyed) when empty+unfocused — no overlay
-    -- widget (an overlay intercepted clicks and broke the field). It's cleared on focus, restored on
-    -- blur-while-empty, and never leaks into `query`.
+-- Bordered search box (Quests and Topics pages), growing to fill the rest of its row. `getQuery()` reads the
+-- page's query; `onChange(text)` stores it and refreshes -- PARTIALLY, so the field keeps keyboard focus.
+-- The input's layout writes the typed text back into its own props first; otherwise menu:update() re-syncs
+-- the field to the stale layout and blanks it (the "typed text invisible / cursor stuck at 0" bug).
+-- The placeholder is the input's OWN text (greyed) when empty+unfocused — no overlay widget (an overlay
+-- intercepted clicks and broke the field). It's cleared on focus, restored on blur-while-empty, and never
+-- leaks into the query.
+local function searchBox(name, getQuery, onChange)
     local PH = l10n('search_placeholder')
-    local searchInput
-    searchInput = {
-        name = 'searchInput',
+    local input
+    input = {
+        name = name .. 'Input',
         template = I.MWUI.templates.textEditLine,
         -- fill the box width (the box `size` is ignored — Container autosizes — so we grow the box
         -- instead and stretch the input to it with relativeSize)
         props = {
-            text = (query == '') and PH or query,
-            textColor = (query == '') and components.GRAY or components.WHITE,
+            text = (getQuery() == '') and PH or getQuery(),
+            textColor = (getQuery() == '') and components.GRAY or components.WHITE,
             relativeSize = v2(1, 0), size = v2(-12, 0), position = v2(6, 0),
             relativePosition = v2(0, 0.5), anchor = v2(0, 0.5),
         },
         events = {
             textChanged = async:callback(function(text)
-                query = text
-                listOffset = 0
-                searchInput.props.text = text
-                searchInput.props.textColor = components.WHITE
-                refreshList()
+                input.props.text = text
+                input.props.textColor = components.WHITE
+                onChange(text)
             end),
             focusGain = async:callback(function()
-                if query == '' then   -- clear the placeholder so the user types into an empty field
-                    searchInput.props.text = ''
-                    searchInput.props.textColor = components.WHITE
+                if getQuery() == '' then   -- clear the placeholder so the user types into an empty field
+                    input.props.text = ''
+                    input.props.textColor = components.WHITE
                     if menu then pcall(menu.update, menu) end
                 end
             end),
             focusLoss = async:callback(function()
-                if query == '' then   -- restore the greyed placeholder
-                    searchInput.props.text = PH
-                    searchInput.props.textColor = components.GRAY
+                if getQuery() == '' then   -- restore the greyed placeholder
+                    input.props.text = PH
+                    input.props.textColor = components.GRAY
                     if menu then pcall(menu.update, menu) end
                 end
             end),
@@ -479,40 +496,83 @@ local function buildLeft(s)
     -- Plain Widget (NOT the box template): the box is a Container that autosizes, and with grow + a
     -- relativeSize input it collapsed to nothing. A fixed-size grow Widget + manual border lines fills
     -- the row reliably; the input relativeSizes to it without a circular dependency.
-    local searchBox = {
-        name = 'search',
+    return {
+        name = name,
         type = ui.TYPE.Widget,
-        props = { size = v2(0, SEARCH_H) },
+        props = { size = v2(0, L.SEARCH_H) },
         external = { grow = 1 },   -- fill the rest of the search row -> right border reaches the scrollbar
-        content = components.framed { searchInput },
+        content = components.framed { input },
     }
+end
 
-    -- Funnel button: a bordered frame (same 1px lines + height as the search box) with a smaller centered
-    -- icon, so it reads as a clickable button. Click toggles the combo row; the icon shade signals filter
-    -- state (bright = filter active, mid = row open, dim = idle).
-    local funnelBtn = {
-        type = ui.TYPE.Widget,
-        props = { size = v2(ICON_SZ, SEARCH_H) },
-        events = { mouseClick = async:callback(function() toggleFilterRow() end) },
-        content = components.framed {   -- 8-piece directional frame (matches scrollbar boxes)
-            { type = ui.TYPE.Image,
-              props = { size = v2(14, 14), resource = ui.texture { path = FILTER_ICON },
-                        alpha = selectedFilter and 1 or (filterRowOn and 0.8 or 0.55),
-                        relativePosition = v2(0.5, 0.5), anchor = v2(0.5, 0.5) } },
-        },
+-- Wheel routing for a two-pane page (Quests, Topics): which pane the wheel scrolls is set by hovering. The
+-- detail pane can't report it: its journal text paragraphs are TextEdits, and a TextEdit's inner MyGUI
+-- 'Client' widget takes the mouse and passes no event on to Lua (see GUI_NOTES). So the LIST column decides
+-- both ways: the mouse coming in (from any of its widgets) selects the list, the mouse leaving it selects the
+-- detail. MyGUI sends "left" to the old widget before "came" to the new one (InputManager::injectMouseMove),
+-- so moving between two rows ends on the list; and a widget destroyed under the cursor (the list re-renders
+-- on scroll) sends no "left" (_unlinkWidget), so a re-render never flips it.
+-- Caveat: focusGain/focusLoss are KEY focus events too (lua_ui widget.cpp). The search box -- the column's only
+-- key-focusable widget -- handles both itself, which stops them here; a new focusable child without its own
+-- handlers would flip the pane on a click.
+local function listColumnEvents(onList, onDetail)
+    return {
+        focusGain = async:callback(onList),
+        focusLoss = async:callback(onDetail),
     }
-    components.attachTooltip(funnelBtn, l10n('filter_tooltip'))
+end
 
-    local searchRow = {   -- [margin] [funnel] [margin] [search box]  (funnel aligns with quest icons)
+local function buildLeft(s)
+    local rows = buildRows(s)   -- MUST run before listThumb: it sets listContentH (the thumb size input)
+    local listBar = listThumb(s)
+    listBar.name = 'listBar'
+
+    local search = searchBox('search', function() return query end, function(text)
+        query = text
+        listOffset = 0
+        refreshList()
+        refreshDetail()   -- re-paint the search matches in the open quest
+    end)
+
+    -- Funnel / sort buttons: a bordered frame (same 1px lines + height as the search box) with a smaller
+    -- centered icon at `alpha`, so it reads as a clickable button.
+    local function iconButton(icon, alpha, onClick, tip)
+        local btn = {
+            type = ui.TYPE.Widget,
+            props = { size = v2(L.ICON_SZ, L.SEARCH_H) },
+            events = { mouseClick = async:callback(onClick) },
+            content = components.framed {   -- 8-piece directional frame (matches scrollbar boxes)
+                { type = ui.TYPE.Image,
+                  props = { size = v2(14, 14), resource = ui.texture { path = icon },
+                            alpha = alpha,
+                            relativePosition = v2(0.5, 0.5), anchor = v2(0.5, 0.5) } },
+            },
+        }
+        components.attachTooltip(btn, tip)
+        return btn
+    end
+    -- The funnel's shade signals the filter state: bright = a filter is active, mid = row open, dim = idle.
+    local funnelBtn = iconButton(L.FILTER_ICON, selectedFilter and 1 or (filterRowOn and 0.8 or 0.55),
+        function() toggleFilterRow() end, l10n('filter_tooltip'))
+    -- No row for sorting: the button opens the popover straight away, so the list never shifts. One fixed
+    -- shade (the funnel's mid level): unlike a filter, an order is never "off" -- some order is always in
+    -- effect, so there is no state to signal.
+    local sortBtn = iconButton(L.SORT_ICON, 0.8,
+        function() questView.openSortPopup() end,
+        function() return l10n('sort_tooltip') .. ': ' .. l10n('sort_' .. questView.sortMode) end)
+
+    local searchRow = {   -- [margin] [funnel] [margin] [sort] [margin] [search box]  (funnel aligns with quest icons)
         name = 'searchRow',
         type = ui.TYPE.Flex,
-        props = { horizontal = true, size = v2(s.listW, SEARCH_H), autoSize = false,
+        props = { horizontal = true, size = v2(s.listW, L.SEARCH_H), autoSize = false,
                   arrange = ui.ALIGNMENT.Center },
         content = ui.content {
-            { props = { size = v2(ICON_MARGIN, 0) } },
+            { props = { size = v2(L.ICON_MARGIN, 0) } },
             funnelBtn,
-            { props = { size = v2(ICON_MARGIN, 0) } },
-            searchBox,
+            { props = { size = v2(L.ICON_MARGIN, 0) } },
+            sortBtn,
+            { props = { size = v2(L.ICON_MARGIN, 0) } },
+            search,
         },
     }
 
@@ -548,7 +608,7 @@ local function buildLeft(s)
     local listStatus = {   -- slim status strip: top divider + left group (hidden eye+count) + right shown/total.
         name = 'listStatus',
         type = ui.TYPE.Widget,
-        props = { size = v2(s.listW, STATUS_H) },
+        props = { size = v2(s.listW, L.STATUS_H) },
         content = ui.content {
             { template = I.MWUI.templates.horizontalLine },   -- top border (y = 0)
             {   -- left group: [eye N] — rebuilt by refreshList; empty when nothing hidden
@@ -562,7 +622,7 @@ local function buildLeft(s)
                 name = 'listCounter',
                 type = ui.TYPE.Text,
                 template = I.MWUI.templates.textNormal,
-                props = { text = #currentOrder .. ' / ' .. listTotal,
+                props = { text = #questView.quests .. ' / ' .. listTotal,
                           textColor = components.GRAY, textSize = 14,
                           position = v2(-2, 0), relativePosition = v2(1, 0.5), anchor = v2(1, 0.5) },
             },
@@ -579,31 +639,67 @@ local function buildLeft(s)
         name = 'left',
         type = ui.TYPE.Flex,
         props = { horizontal = false, size = v2(s.listW, s.contentH), autoSize = false },
+        events = listColumnEvents(function() activePane = 'list' end, function() activePane = 'detail' end),
         content = ui.content(content),
     }
 end
 
 -- Vanilla-journal-style timestamp for a journal entry: "<dayOfMonth> <month> (<Day> <elapsed day>)", or
 -- nil when the entry carries no date. Month names come from OpenMW's Calendar l10n context; the "Day"
--- word from the sDay GMST -- matching what the vanilla journal prints. Shared by the Quests and Records
+-- word from the sDay GMST -- matching what the vanilla journal prints. Shared by the Quests and Journal
 -- detail panes so both timestamps read identically.
 local function entryDateLabel(e)
     if not (e.month and e.dayOfMonth) then return nil end
     local dayWord = core.getGMST('sDay')
     return ('%d %s (%s %d)'):format(
-        e.dayOfMonth, records.calendar('month' .. tostring(e.month)), tostring(dayWord), e.day or 0)
+        e.dayOfMonth, journal.calendar('month' .. tostring(e.month)), tostring(dayWord), e.day or 0)
+end
+
+-- A detail-pane title toggle button (pin / hide): the icon at full opacity when on, dimmed when off, with a
+-- tooltip. Shared by the quest and topic detail panes; `onClick` toggles and refreshes.
+local function iconToggle(iconPath, isOn, onClick, tipFn)
+    local btn = {
+        type = ui.TYPE.Image,
+        props = { size = v2(18, 18), resource = ui.texture { path = iconPath }, alpha = isOn and 1 or 0.45 },
+        events = { mouseClick = async:callback(onClick) },
+    }
+    components.attachTooltip(btn, tipFn)
+    return btn
+end
+
+-- A detail-pane title row: the name in the header font (search matches painted white; the closing tag
+-- restores the header colour) growing to fill `W`, then the toggle `buttons`.
+local function detailTitleRow(text, searchQuery, W, buttons)
+    local content = {
+        { template = I.MWUI.templates.textHeader,
+          props = { text = uiSearch.highlight(text, searchQuery, components.colorHex(components.WHITE),
+                                              components.colorHex(I.MWUI.templates.textHeader.props.textColor)),
+                    textSize = 20 },
+          external = { grow = 1 } },
+    }
+    for _, b in ipairs(buttons) do content[#content + 1] = b end
+    return {
+        type = ui.TYPE.Flex,
+        props = { horizontal = true, size = v2(W, L.TITLE_H), autoSize = false, arrange = ui.ALIGNMENT.Center },
+        content = ui.content(content),
+    }
+end
+
+-- One "Related topics" row: a link `W` wide, TPC_ROW_H tall.
+local function linkRow(text, onClick, W)
+    return {
+        type = ui.TYPE.Flex, props = { horizontal = true, size = v2(W, L.TPC_ROW_H),
+                                       autoSize = false, arrange = ui.ALIGNMENT.Center },
+        content = ui.content { components.link(text, onClick) },
+    }
 end
 
 -- ---- right pane: category + entries ----------------------------------------
 local function buildDetailContent(s)
-    if not selectedId then
-        detailContentH = ROW_H
-        return { components.textLine(l10n('no_quest_selected')) }
-    end
-    local quest = I.QuestmanData.getQuest(selectedId)
+    local quest = selectedId and I.QuestmanData.getQuest(selectedId)
     if not quest then
-        detailContentH = ROW_H
-        vitems.detail = { { node = components.textLine(l10n('no_quest_selected')), h = ROW_H } }
+        detailContentH = L.ROW_H
+        vitems.detail = { { node = components.textLine(l10n('no_quest_selected')), h = L.ROW_H } }
         return
     end
 
@@ -616,31 +712,17 @@ local function buildDetailContent(s)
 
     -- Title row: quest name (grows) + pin & hide toggle buttons (full when active, dim otherwise).
     -- Same actions as ctrl+click (pin) / Del (hide) on the selection.
-    local function iconToggle(iconPath, isOn, toggle, tipFn)
-        local btn = {
-            type = ui.TYPE.Image,
-            props = { size = v2(18, 18), resource = ui.texture { path = iconPath }, alpha = isOn and 1 or 0.45 },
-            events = { mouseClick = async:callback(function() toggle(); refreshList(); refreshDetail() end) },
-        }
-        components.attachTooltip(btn, tipFn)
-        return btn
-    end
-    local pinBtn = iconToggle(PIN_ICON, quest.pinned, function() I.QuestmanData.togglePin(quest.id) end,
+    local pinBtn = iconToggle(L.PIN_ICON, quest.pinned,
+        function() I.QuestmanData.togglePin(quest.id); refreshList(); refreshDetail() end,
         function() return quest.pinned and l10n('unpin_quest') or l10n('pin_quest') end)
-    local eyeBtn = iconToggle(HIDDEN_ICON, quest.hidden, function() I.QuestmanData.toggleHide(quest.id) end,
+    local eyeBtn = iconToggle(L.HIDDEN_ICON, quest.hidden,
+        function() I.QuestmanData.toggleHide(quest.id); refreshList(); refreshDetail() end,
         function() return quest.hidden and l10n('unhide_quest') or l10n('hide_quest') end)
-    push({
-        type = ui.TYPE.Flex,
-        props = { horizontal = true, size = v2(s.detailVpW - 2, TITLE_H), autoSize = false,
-                  arrange = ui.ALIGNMENT.Center },
-        content = ui.content {
-            { template = I.MWUI.templates.textHeader, props = { text = quest.name or quest.id, textSize = 20 },
-              external = { grow = 1 } },
-            pinBtn,
-            { props = { size = v2(6, 0) } },   -- margin between the two icon buttons
-            eyeBtn,
-        },
-    }, TITLE_H)
+    push(detailTitleRow(quest.name or quest.id, query, s.detailVpW - 2, {
+        pinBtn,
+        { props = { size = v2(6, 0) } },   -- margin between the two icon buttons
+        eyeBtn,
+    }), L.TITLE_H)
     push({ props = { size = v2(0, 4) } }, 4)   -- small gap separating the title from the static labels
     -- Category / faction lines double as filter launchers (like the Stats rows): clicking jumps to the
     -- Quests tab filtered to that group. Same look/colours — only a click handler is added.
@@ -648,36 +730,40 @@ local function buildDetailContent(s)
     local catText = l10n('cat_' .. catKey)
     if quest.addonLabel then catText = catText .. ' (' .. quest.addonLabel .. ')' end   -- e.g. "Daedric Quests (Bloodmoon)"
     push(components.labelValue(l10n('category_label'), catText, components.LABEL_COLOR,
-        function() jumpToFilter('category', catKey, l10n('cat_' .. catKey)) end), LINE_ROW)
+        function() jumpToFilter('category', catKey, l10n('cat_' .. catKey)) end), L.LINE_ROW)
     if quest.faction then
         -- keyOf('faction') is the factionId; without it a filter would match nothing, so leave it static.
         local onFaction = quest.factionId
             and function() jumpToFilter('faction', quest.factionId, quest.faction) end or nil
-        push(components.labelValue(l10n('faction_label'), quest.faction, components.LABEL_COLOR, onFaction), LINE_ROW)
+        push(components.labelValue(l10n('faction_label'), quest.faction, components.LABEL_COLOR, onFaction), L.LINE_ROW)
     end
     if quest.giver then
-        push(components.labelValue(l10n('quest_from_label'), quest.giver, components.LABEL_COLOR), LINE_ROW)
+        push(components.labelValue(l10n('quest_from_label'), quest.giver, components.LABEL_COLOR), L.LINE_ROW)
     end
     if settings:get('ShowTechnicalInfo') then
         -- Show the started record actually driving the display + ITS OWN stage. The main id may be a
         -- not-yet-started finishing record (e.g. C3_DestroyDagoth while only C0_Act_C_Expo has started),
         -- so pairing it with this stage would be misleading. Meta quests span several journal ids, but
-        -- listing them all here is noisy; the full list is logged on select instead (see onSelect).
+        -- listing them all here is noisy, so only the active one shows.
         local active = (quest.techRows or {})[1]   -- active branch first; falls back to the main id
         local techId = active and active.id or quest.id
         local techStage = active and active.stage or quest.stage or 0
-        push(components.textLine(l10n('tech_info', { id = techId, stage = techStage }), components.GRAY), LINE_ROW)
+        push(components.textLine(l10n('tech_info', { id = techId, stage = techStage }), components.GRAY), L.LINE_ROW)
     end
-    push({ props = { size = v2(0, PAD) } }, PAD)
+    push({ props = { size = v2(0, L.PAD) } }, L.PAD)
 
     local entries = quest.entries or {}
     if #entries > 0 then
-        push(components.subtitle(l10n('journal_entries_label')), LINE_ROW)
-        push({ props = { size = v2(0, PAD) } }, PAD)
+        push(components.subtitle(l10n('journal_entries_label')), L.LINE_ROW)
+        push({ props = { size = v2(0, L.PAD) } }, L.PAD)
         -- Newest entry first (the player reads the latest progress at the top). Each entry is preceded by
-        -- its in-game date (brown, vanilla-journal style), mirroring the Records tab.
+        -- its in-game date (brown, vanilla-journal style), like the Journal tab.
         local brownHex = components.colorHex(components.LABEL_COLOR)
-        local W = s.detailVpW - PAD
+        -- Search matches are painted white; the closing tag must restore the paragraph's OWN colour
+        -- (a MyGUI colour tag only switches colour, it has no "end"), so read it from the template.
+        local matchHex = components.colorHex(components.WHITE)
+        local textHex = components.colorHex(I.MWUI.templates.textParagraph.props.textColor)
+        local W = s.detailVpW - L.PAD
         for i = #entries, 1, -1 do
             local e = entries[i]
             local dateLabel = entryDateLabel(e)
@@ -686,8 +772,10 @@ local function buildDetailContent(s)
                      uiScroll.estimateTextHeight(dateLabel, W) + 2)
             end
             local text = e.text or ''
-            push(components.paragraph(text, W), uiScroll.estimateTextHeight(text, W) + 2)
-            push({ props = { size = v2(0, ENTRY_GAP) } }, ENTRY_GAP)   -- small gap between entries
+            -- Height from the UNTAGGED text: the estimate counts characters, and the tags are not drawn.
+            push(components.paragraph(uiSearch.highlight(text, query, matchHex, textHex), W),
+                 uiScroll.estimateTextHeight(text, W) + 2)
+            push({ props = { size = v2(0, L.ENTRY_GAP) } }, L.ENTRY_GAP)   -- small gap between entries
         end
     end
 
@@ -696,17 +784,11 @@ local function buildDetailContent(s)
     -- Topics page's own related list.
     local links = I.QuestmanData.getQuestLinks(quest.id)
     if #links > 0 then
-        push({ props = { size = v2(0, PAD) } }, PAD)
-        push(components.subtitle(l10n('related_topics')), TITLE_H)
+        push({ props = { size = v2(0, L.PAD) } }, L.PAD)
+        push(components.subtitle(l10n('related_topics')), L.TITLE_H)
         for _, lk in ipairs(links) do
             local id = lk.id
-            push({
-                type = ui.TYPE.Flex, props = { horizontal = true, size = v2(s.detailVpW - PAD, TPC_ROW_H),
-                                               autoSize = false, arrange = ui.ALIGNMENT.Center },
-                content = ui.content {
-                    components.link(lk.name, function() openTopic(id) end),
-                },
-            }, TPC_ROW_H)
+            push(linkRow(lk.name, function() openTopic(id) end, s.detailVpW - L.PAD), L.TPC_ROW_H)
         end
     end
 
@@ -715,17 +797,17 @@ local function buildDetailContent(s)
 end
 
 local function detailThumb(s)
-    local trackH = s.detailViewH - 2 * ARROW_H
+    local trackH = s.detailViewH - 2 * L.ARROW_H
     local function step(d)
         detailOffset = uiScroll.clamp(detailOffset + d, detailContentH, s.detailViewH)
         applyDetailOffset()
     end
     return components.scrollbar {
-        width = BAR_W, height = s.detailViewH, arrowH = ARROW_H,
-        thumb = uiScroll.thumb(detailContentH, s.detailViewH, trackH, detailOffset, SCROLL_SLACK),
+        width = L.BAR_W, height = s.detailViewH, arrowH = L.ARROW_H,
+        thumb = uiScroll.thumb(detailContentH, s.detailViewH, trackH, detailOffset, L.SCROLL_SLACK),
         onDrag = function(dy) step(dy * (detailContentH / math.max(1, trackH))) end,
-        onStepUp = function() step(-WHEEL_STEP) end,
-        onStepDown = function() step(WHEEL_STEP) end,
+        onStepUp = function() step(-L.WHEEL_STEP) end,
+        onStepDown = function() step(L.WHEEL_STEP) end,
     }
 end
 
@@ -756,7 +838,7 @@ local function buildDetail(s)
                         -- a page of auto-height journal paragraphs made scrolling lag. We already know the
                         -- height, so hand it over. (detailVpW-wide so children keep their layout width.)
                         props = { size = v2(s.detailVpW, detailContentH),
-                                  position = v2(0, DETAIL_DY - detailOffset), autoSize = false },
+                                  position = v2(0, L.DETAIL_DY - detailOffset), autoSize = false },
                         events = {
                             mouseMove = async:callback(function() activePane = 'detail' end),
                             mousePress = async:callback(function() activePane = 'detail' end),
@@ -781,14 +863,14 @@ local function buildTitleBar(s)
                 resource = ui.texture { path = 'textures/menu_head_block_middle.dds' },
                 tileH = true,
                 tileV = true,
-                size = v2(0, TITLE_H),
+                size = v2(0, L.TITLE_H),
             },
         }
     end
     return {
         name = 'titlebar',
         type = ui.TYPE.Flex,
-        props = { horizontal = true, size = v2(s.innerW, TITLE_H), autoSize = false,
+        props = { horizontal = true, size = v2(s.innerW, L.TITLE_H), autoSize = false,
                   arrange = ui.ALIGNMENT.Center },
         userData = { drag = false, last = nil },
         content = ui.content {
@@ -808,6 +890,7 @@ local function buildTitleBar(s)
                 layout.userData.last = e.position
             end),
             mouseMove = async:callback(function(e, layout)
+                activePane, topicActive = 'list', 'left'   -- the window chrome gives the wheel to the list (see 'main')
                 if layout.userData.drag and layout.userData.last then
                     local d = e.position - layout.userData.last
                     geom.x = geom.x + d.x
@@ -886,7 +969,7 @@ local function makeResizeStrip(dir, outer)
                 if not (layout.userData.drag and layout.userData.from and menu) then return end
                 local screen = logicalScreen()
                 local g = uiResize.apply(dir, e.position - layout.userData.from, layout.userData.start,
-                    { minW = MIN_W, minH = MIN_H, screenW = screen.x, screenH = screen.y })
+                    { minW = L.MIN_W, minH = L.MIN_H, screenW = screen.x, screenH = screen.y })
                 geom.x, geom.y, geom.w, geom.h = g.x, g.y, g.w, g.h
                 menu.layout.props.position = v2(geom.x, geom.y)   -- origin may move (left/top edges)
                 applySizes()                                      -- resizes inner nodes + menu:update()
@@ -917,7 +1000,7 @@ local function makeDivider(getFrac, setFrac, saveFrac)
         -- With it, the whole handle -- starting at the visible line -- reads as the resize grab zone.
         content = ui.content {
             { template = I.MWUI.templates.verticalLine, external = { stretch = 1 }, props = { pointer = 'hresize' } },
-            { props = { size = v2(DETAIL_GAP, 0), pointer = 'hresize' } },   -- gap before detail
+            { props = { size = v2(L.DETAIL_GAP, 0), pointer = 'hresize' } },   -- gap before detail
         },
         events = {
             mousePress = async:callback(function(e, l)
@@ -944,12 +1027,10 @@ local function makeDivider(getFrac, setFrac, saveFrac)
     }
 end
 
--- footer button row content: the show-completed checkbox (the shown/total counter now lives in the
--- list's bottom status strip, freeing the footer). [✔ Display completed] — the checkbox (bordered box
--- + bundled tick image when on) toggles the completed filter.
+-- footer button row content: [✔ Display completed] — the checkbox (bordered box + bundled tick image when
+-- on) toggles the completed filter.
 local COMPLETED_TICK = 'Icons/questman/ui_check_mark.dds'
 local function footerButtons()
-    -- Topics page: the count moved to the list's own status strip (like Quests), so the footer is empty.
     if activePage ~= 'quests' then return {} end   -- the completed toggle is a quest-list control only
     return {
         components.checkbox {
@@ -967,8 +1048,7 @@ local function footerButtons()
     }
 end
 
--- close button in the footer, right side (left of the resize grip) — system windows keep buttons
--- out of the title bar
+-- close button in the footer, right side — system windows keep buttons out of the title bar
 local function footerClose()
     -- Exit whichever mode owns us (teardown follows via onUiModeChanged / the override hideFn).
     local b = components.button(l10n('close'), function()
@@ -977,11 +1057,11 @@ local function footerClose()
     b.props = b.props or {}
     b.props.relativePosition = v2(1, 0.5)
     b.props.anchor = v2(1, 0.5)
-    b.props.position = v2(-FOOTER_GAP, 0)   -- inset from the footer's right edge = the button's vertical gap
+    b.props.position = v2(-L.FOOTER_GAP, 0)   -- inset from the footer's right edge = the button's vertical gap
     return b
 end
 
--- ---- page tabs (Quests / Stats) --------------------------------------------
+-- ---- page tabs (Quests / Topics / Journal / Progress) ---------------------------
 local switchPage   -- forward decl (tabButtons references it)
 
 -- A stats row: [PAD][label column][value column, right-aligned][optional checkmark]. The value column
@@ -994,13 +1074,13 @@ local function statRow(W, labelW, label, value, opts)
     local iconCell
     if opts.icon then
         iconCell = { type = ui.TYPE.Image,
-                     props = { size = v2(ICON_SZ, ICON_SZ), resource = ui.texture { path = opts.icon } } }
-        components.attachIconZoom(iconCell, opts.icon, STAT_ICON_ZOOM)   -- hover -> enlarged preview (Stats only)
+                     props = { size = v2(L.ICON_SZ, L.ICON_SZ), resource = ui.texture { path = opts.icon } } }
+        components.attachIconZoom(iconCell, opts.icon, L.STAT_ICON_ZOOM)   -- hover -> enlarged preview (Stats only)
     else
-        iconCell = { props = { size = v2(ICON_SZ, 0) } }
+        iconCell = { props = { size = v2(L.ICON_SZ, 0) } }
     end
     local labelBox = {
-        type = ui.TYPE.Widget, props = { size = v2(labelW, STAT_ROW) },
+        type = ui.TYPE.Widget, props = { size = v2(labelW, L.STAT_ROW) },
         content = ui.content {
             { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
               props = { text = label .. ':', textColor = components.LABEL_COLOR,
@@ -1008,23 +1088,23 @@ local function statRow(W, labelW, label, value, opts)
         },
     }
     local valueBox = {
-        type = ui.TYPE.Widget, props = { size = v2(STAT_VALUE_W, STAT_ROW) },
+        type = ui.TYPE.Widget, props = { size = v2(L.STAT_VALUE_W, L.STAT_ROW) },
         content = ui.content {
             { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
               props = { text = value, relativePosition = v2(1, 0.5), anchor = v2(1, 0.5) } },
         },
     }
-    local cells = { { props = { size = v2(PAD, 0) } }, iconCell,
-                    { props = { size = v2(STAT_ICON_GAP, 0) } }, labelBox, valueBox }
+    local cells = { { props = { size = v2(L.PAD, 0) } }, iconCell,
+                    { props = { size = v2(L.STAT_ICON_GAP, 0) } }, labelBox, valueBox }
     if opts.check then
         local tick = { type = ui.TYPE.Image,
-                       props = { size = v2(14, 14), resource = ui.texture { path = STAT_TICK } } }
+                       props = { size = v2(14, 14), resource = ui.texture { path = L.STAT_TICK } } }
         if opts.checkGray then tick.props.color = components.GRAY end   -- muted = earned elsewhere / not here
         if opts.checkTip then components.attachTooltip(tick, opts.checkTip) end
         cells[#cells + 1] = { props = { size = v2(5, 0) } }
         cells[#cells + 1] = tick
     end
-    local row = { type = ui.TYPE.Flex, props = { horizontal = true, size = v2(W, STAT_ROW), autoSize = false,
+    local row = { type = ui.TYPE.Flex, props = { horizontal = true, size = v2(W, L.STAT_ROW), autoSize = false,
                                                  arrange = ui.ALIGNMENT.Center },
                   content = ui.content(cells) }
     if opts.onClick then   -- the whole row opens the Quests tab pre-filtered to this group (see statFilter)
@@ -1034,10 +1114,10 @@ local function statRow(W, labelW, label, value, opts)
 end
 
 local function statHeader(W, title)
-    return { type = ui.TYPE.Flex, props = { horizontal = true, size = v2(W, STAT_HEADER_H), autoSize = false,
+    return { type = ui.TYPE.Flex, props = { horizontal = true, size = v2(W, L.STAT_HEADER_H), autoSize = false,
                                             arrange = ui.ALIGNMENT.Center },
              content = ui.content {
-                 { props = { size = v2(PAD, 0) } },
+                 { props = { size = v2(L.PAD, 0) } },
                  { template = I.MWUI.templates.textHeader, props = { text = title, textSize = 16 } },
              } }
 end
@@ -1046,8 +1126,8 @@ end
 local function statsColumn(W, build)
     local out, h = {}, 0
     local api = {}
-    function api.header(title) out[#out + 1] = statHeader(W, title); h = h + STAT_HEADER_H end
-    function api.row(labelW, label, value, opts) out[#out + 1] = statRow(W, labelW, label, value, opts); h = h + STAT_ROW end
+    function api.header(title) out[#out + 1] = statHeader(W, title); h = h + L.STAT_HEADER_H end
+    function api.row(labelW, label, value, opts) out[#out + 1] = statRow(W, labelW, label, value, opts); h = h + L.STAT_ROW end
     function api.divider()
         out[#out + 1] = { props = { size = v2(0, 6) } }; h = h + 6
         out[#out + 1] = { template = I.MWUI.templates.horizontalLine, props = { size = v2(W, 0) }, external = { stretch = 1 } }; h = h + 2
@@ -1063,7 +1143,7 @@ jumpToFilter = function(axis, key, label)
     selectedFilter = { axis = axis, key = key, label = label }
     filterRowOn = true   -- reveal the filter row so the active filter shows and can be cleared
     listOffset = 0
-    closeFilterPopup()
+    closePopup()
     -- From another tab (Stats rows), switch to Quests -> switchPage rebuilds the page with the filter.
     -- From the Quests detail pane we're already here, so goToPage would no-op (activePage unchanged) and
     -- nothing would redraw; rebuild the pane in place so the combo row, funnel shade and list all reflect
@@ -1085,12 +1165,12 @@ end
 --   LEFT  = Overview + By factions        RIGHT = By add-ons + By categories
 -- Every non-Overview row carries its group's icon and is clickable (see statFilter). Sets statsContentH
 -- to the taller column, which drives the single shared scrollbar.
-local function buildStatsColumns(stats, vpW)
+local function buildStatsColumns(stats)
     -- Static layout: fixed label + value widths -> a fixed column width, so the right column and the numbers
-    -- stay put regardless of window size (vpW is intentionally ignored). Narrow windows just clip on the
+    -- stay put regardless of window size. Narrow windows just clip on the
     -- right (labels get a hover tooltip); widen the window or trim STAT_LABEL_W if that ever bites.
-    local labelW = STAT_LABEL_W
-    local colW = PAD + ICON_SZ + STAT_ICON_GAP + labelW + STAT_VALUE_W + STAT_CHECK_W + STAT_COL_GAP
+    local labelW = L.STAT_LABEL_W
+    local colW = L.PAD + L.ICON_SZ + L.STAT_ICON_GAP + labelW + L.STAT_VALUE_W + L.STAT_CHECK_W + L.STAT_COL_GAP
     -- The RIGHT column starts at x = colW (the columns sit flush in a horizontal Flex). An odd colW lands
     -- that x on a half-pixel at fractional GUI scales (e.g. 343 * 1.5 = 514.5), which shifts the whole right
     -- column and clips its icons' left edge. Snap colW up to a multiple of 4 so the boundary is a whole
@@ -1104,9 +1184,9 @@ local function buildStatsColumns(stats, vpW)
     local leftNodes, leftH = statsColumn(colW, function(c)
         c.header(l10n('stats_overview'))
         c.row(labelW, l10n('stat_active'), single(stats.overall.active),
-              { icon = STAT_ICON_ACTIVE })                                                            -- in-progress icon; not clickable
+              { icon = L.STAT_ICON_ACTIVE })                                                            -- in-progress icon; not clickable
         c.row(labelW, l10n('stat_completed'), pair(stats.overall.completed, stats.overall.total),
-              { icon = STAT_ICON_DONE })                                                              -- completed icon; not clickable
+              { icon = L.STAT_ICON_DONE })                                                              -- completed icon; not clickable
         -- Skip the whole "By factions" block (divider + header) until the player has a faction quest —
         -- otherwise the start of the game shows a bare "By factions:" label over nothing.
         if #stats.byFaction > 0 then
@@ -1150,17 +1230,17 @@ end
 
 -- The single scrollable stats panel = [viewport(inner Flex)][scrollbar].
 local function statsPane(paneW, viewH, contentNodes)
-    local trackH = viewH - 2 * ARROW_H
+    local trackH = viewH - 2 * L.ARROW_H
     local function step(d)
         statsOffset = uiScroll.clamp(statsOffset + d, statsContentH, viewH)
         applyStatsOffset()
     end
     local bar = components.scrollbar {
-        width = BAR_W, height = viewH, arrowH = ARROW_H,
+        width = L.BAR_W, height = viewH, arrowH = L.ARROW_H,
         thumb = uiScroll.thumb(statsContentH, viewH, trackH, statsOffset),
         onDrag = function(dy) step(dy * (statsContentH / math.max(1, trackH))) end,
-        onStepUp = function() step(-WHEEL_STEP) end,
-        onStepDown = function() step(WHEEL_STEP) end,
+        onStepUp = function() step(-L.WHEEL_STEP) end,
+        onStepDown = function() step(L.WHEEL_STEP) end,
     }
     bar.name = 'statsColBar'
     return {
@@ -1171,7 +1251,7 @@ local function statsPane(paneW, viewH, contentNodes)
             {
                 name = 'statsColVp',
                 type = ui.TYPE.Widget,
-                props = { size = v2(paneW - BAR_W, viewH) },
+                props = { size = v2(paneW - L.BAR_W, viewH) },
                 events = { mouseMove = async:callback(function() activePane = 'stats' end) },
                 content = ui.content {
                     {
@@ -1191,8 +1271,7 @@ end
 local function buildStatsPage(s)
     local stats = I.QuestmanData.getStats()
     local viewH = s.contentH
-    local vpW = s.innerW - BAR_W                  -- inner (viewport) width the two columns fill
-    local cols = buildStatsColumns(stats, vpW)    -- MUST precede statsPane: sets statsContentH (thumb input)
+    local cols = buildStatsColumns(stats)   -- MUST precede statsPane: sets statsContentH (thumb input)
     return {
         name = 'statsPage',
         type = ui.TYPE.Flex,
@@ -1207,22 +1286,21 @@ end
 
 -- Generic vertical scroll pane: [viewport(inner Flex)][scrollbar]. `pre` = node-name prefix; `step(d)`
 -- adjusts the offset + thumb; `onHover` marks the active pane. (Stats has its own statsPane; this serves
--- the Topics page, the filter dropdown, and any future interactive scroll pane.)
--- Forward-declared (top of file) so buildLeft, defined earlier, can use it for the filter dropdown.
+-- the Topics page, the Journal feed and the filter popover.)
 scrollPane = function(pre, paneW, viewH, contentNodes, contentH, offset, step, onHover, slack)
-    local trackH = viewH - 2 * ARROW_H
+    local trackH = viewH - 2 * L.ARROW_H
     local bar = components.scrollbar {
-        width = BAR_W, height = viewH, arrowH = ARROW_H,
+        width = L.BAR_W, height = viewH, arrowH = L.ARROW_H,
         thumb = uiScroll.thumb(contentH, viewH, trackH, offset, slack),   -- slack: text panes only (est. height)
         onDrag = function(dy) step(dy * (contentH / math.max(1, trackH))) end,
-        onStepUp = function() step(-WHEEL_STEP) end,
-        onStepDown = function() step(WHEEL_STEP) end,
+        onStepUp = function() step(-L.WHEEL_STEP) end,
+        onStepDown = function() step(L.WHEEL_STEP) end,
     }
     bar.name = pre .. 'Bar'
     return {
         name = pre, type = ui.TYPE.Flex, props = { horizontal = true, size = v2(paneW, viewH), autoSize = false },
         content = ui.content {
-            { name = pre .. 'Vp', type = ui.TYPE.Widget, props = { size = v2(paneW - BAR_W, viewH) },
+            { name = pre .. 'Vp', type = ui.TYPE.Widget, props = { size = v2(paneW - L.BAR_W, viewH) },
               events = { mouseMove = async:callback(onHover) },
               content = ui.content {
                   { name = pre .. 'Inner', type = ui.TYPE.Flex,
@@ -1242,25 +1320,99 @@ buildComboRow = function(s)
     -- like the search box. Label + ⇓ are absolutely positioned (left / right insets) so no width is needed.
     return {
         name = 'filterRow', type = ui.TYPE.Flex,
-        props = { horizontal = true, size = v2(s.listW, COMBO_H), autoSize = false,
+        props = { horizontal = true, size = v2(s.listW, L.COMBO_H), autoSize = false,
                   arrange = ui.ALIGNMENT.Center },
         content = ui.content {
-            { props = { size = v2(ICON_MARGIN, 0) } },
+            { props = { size = v2(L.ICON_MARGIN, 0) } },
             {
                 name = 'filterCombo', type = ui.TYPE.Widget,
-                props = { size = v2(0, SEARCH_H) }, external = { grow = 1 },
+                props = { size = v2(0, L.SEARCH_H) }, external = { grow = 1 },
                 events = { mouseClick = async:callback(function() toggleFilterPopup() end) },
                 content = components.framed {
                     { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
                       props = { text = label, textColor = selectedFilter and components.WHITE or components.GRAY,
-                                position = v2(PAD, 0), relativePosition = v2(0, 0.5), anchor = v2(0, 0.5) } },
+                                position = v2(L.PAD, 0), relativePosition = v2(0, 0.5), anchor = v2(0, 0.5) } },
                     { type = ui.TYPE.Image,
-                      props = { size = v2(14, 14), resource = ui.texture { path = FILTER_ARROW },
-                                position = v2(-PAD, 0), relativePosition = v2(1, 0.5), anchor = v2(1, 0.5) } },
+                      props = { size = v2(14, 14), resource = ui.texture { path = L.FILTER_ARROW },
+                                position = v2(-L.PAD, 0), relativePosition = v2(1, 0.5), anchor = v2(1, 0.5) } },
                 },
             },
         },
     }
+end
+
+-- y of the search row's bottom edge in screen space, where both popovers hang from (window-relative layout
+-- constants; tweak DIV / PAD if misaligned).
+local function searchRowBottom()
+    return geom.y + L.PAD + L.TITLE_H + L.DIV + L.TAB_H + L.DIV + L.SEARCH_H
+end
+
+-- A popover: a full-screen transparent backdrop (a press outside the box closes it) holding a solid box at
+-- `position` with `child` inside. propagateEvents=false on the box so inside-clicks don't hit the backdrop.
+local function popover(name, position, child)
+    return {
+        layer = L.POPUP_LAYER,
+        type = ui.TYPE.Widget,
+        props = { size = logicalScreen() },
+        events = { mousePress = async:callback(function() closePopup() end) },
+        content = ui.content {
+            {
+                name = name, type = ui.TYPE.Container, template = I.MWUI.templates.boxSolid,
+                props = { position = position, propagateEvents = false },
+                content = ui.content { child },
+            },
+        },
+    }
+end
+
+-- One popover option `rowW` wide: the label (+ a gray count when given). Like the quest list, the active
+-- (selected) option is the bright WHITE, the rest the gold HIGHLIGHT.
+local function optionRow(label, count, active, onClick, rowW)
+    return {
+        type = ui.TYPE.Flex, props = { horizontal = true, size = v2(rowW, L.FILTER_ROW_H),
+                                       autoSize = false, arrange = ui.ALIGNMENT.Center },
+        content = ui.content {
+            { props = { size = v2(L.PAD, 0) } },
+            { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal, external = { grow = 1 },
+              props = { text = label, textColor = active and components.WHITE or components.HIGHLIGHT } },
+            count and { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
+                        props = { text = tostring(count), textColor = components.GRAY, textSize = 14 } }
+                  or { props = { size = v2(0, 0) } },
+            { props = { size = v2(L.PAD, 0) } },
+        },
+        events = { mouseClick = async:callback(onClick) },
+    }
+end
+
+-- The sort popover: the orders (questView.SORT_MODES) as options, styled like the filter popover's, dropped
+-- under the sort button. Unlike the filter there is no combo row: an order hides no quests and shows in the
+-- list itself, so nothing has to stay on screen to explain it (the button's tooltip names it), and the list
+-- never shifts. It shares popupEl with the filter popover, so every close path (closePopup: outside press --
+-- which also makes a second click on the button close it --, page switch, resize, window close) covers it.
+function questView.buildSortPopup()
+    local nodes = {}
+    for _, mode in ipairs(questView.SORT_MODES) do
+        nodes[#nodes + 1] = optionRow(l10n('sort_' .. mode), nil, questView.sortMode == mode,
+            function() questView.setSort(mode) end, L.SORT_POPUP_W)
+    end
+    -- right under the sort button: the funnel and the margins on either side of it come first
+    local popX = geom.x + L.PAD + 2 * L.ICON_MARGIN + L.ICON_SZ
+    return popover('sortPop', v2(popX, searchRowBottom()),
+        { type = ui.TYPE.Flex, props = { horizontal = false }, content = ui.content(nodes) })
+end
+
+function questView.openSortPopup()
+    if popupEl or activePage ~= 'quests' then return end
+    local ok, el = pcall(function() return ui.create(questView.buildSortPopup()) end)
+    if ok then popupEl = el else dbg('sort popup create failed:', tostring(el)) end
+end
+
+function questView.setSort(mode)
+    closePopup()
+    if questView.sortMode == mode then return end
+    questView.sortMode = mode
+    listOffset = 0
+    refreshList()
 end
 
 -- Walk named nodes inside the popover Element (separate from the menu, so nodeByPath can't reach it).
@@ -1277,34 +1429,16 @@ local function popNode(...)
     return node
 end
 
--- The floating options popover: a full-screen transparent backdrop (a click outside closes it) holding a
--- solid box, anchored just below the combo row, with the grouped single-select option list inside.
+-- The floating filter options popover, anchored just below the combo row: the grouped single-select option
+-- list in a scroll pane.
 buildFilterPopup = function()
     local s = sizes()
-    local popW = s.listW - ICON_MARGIN     -- match the combo box (ICON_MARGIN inset on the left, flush right)
-    local rowW = popW - BAR_W
+    local popW = s.listW - L.ICON_MARGIN     -- match the combo box (ICON_MARGIN inset on the left, flush right)
+    local rowW = popW - L.BAR_W
 
-    local function optionRow(label, count, active, onClick)
-        -- match the quest list: the active (selected) option is the bright WHITE, the rest the gold HIGHLIGHT
-        local color = active and components.WHITE or components.HIGHLIGHT
-        return {
-            type = ui.TYPE.Flex, props = { horizontal = true, size = v2(rowW, FILTER_ROW_H),
-                                           autoSize = false, arrange = ui.ALIGNMENT.Center },
-            content = ui.content {
-                { props = { size = v2(PAD, 0) } },
-                { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal, external = { grow = 1 },
-                  props = { text = label, textColor = color } },
-                count and { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
-                            props = { text = tostring(count), textColor = components.GRAY, textSize = 14 } }
-                      or { props = { size = v2(0, 0) } },
-                { props = { size = v2(PAD, 0) } },
-            },
-            events = { mouseClick = async:callback(onClick) },
-        }
-    end
     local function headerRow(text)   -- same font size as the option (category) rows; just a different colour
         return {
-            type = ui.TYPE.Flex, props = { horizontal = true, size = v2(rowW, FILTER_HDR_H),
+            type = ui.TYPE.Flex, props = { horizontal = true, size = v2(rowW, L.FILTER_HDR_H),
                                            autoSize = false, arrange = ui.ALIGNMENT.Center },
             content = ui.content {
                 { props = { size = v2(4, 0) } },
@@ -1316,42 +1450,26 @@ buildFilterPopup = function()
 
     local nodes, h = {}, 0
     local function add(node, ht) nodes[#nodes + 1] = node; h = h + ht end
-    add(optionRow(l10n('filter_all'), nil, selectedFilter == nil, function() selectFilter(nil) end), FILTER_ROW_H)
+    add(optionRow(l10n('filter_all'), nil, selectedFilter == nil, function() selectFilter(nil) end, rowW), L.FILTER_ROW_H)
     local lastAxis
     for _, o in ipairs(I.QuestmanData.getFilterOptions()) do
         if o.axis ~= lastAxis then
             lastAxis = o.axis
-            add(headerRow(l10n('filter_axis_' .. o.axis)), FILTER_HDR_H)
+            add(headerRow(l10n('filter_axis_' .. o.axis)), L.FILTER_HDR_H)
         end
         local active = selectedFilter ~= nil and selectedFilter.axis == o.axis and selectedFilter.key == o.key
-        add(optionRow(o.label, o.count, active, function() selectFilter(o) end), FILTER_ROW_H)
+        add(optionRow(o.label, o.count, active, function() selectFilter(o) end, rowW), L.FILTER_ROW_H)
     end
     filterContentH = h
-    local popH = math.min(FILTER_POPUP_H, filterContentH)
+    local popH = math.min(L.FILTER_POPUP_H, filterContentH)
     popupViewH = popH
     filterOffset = uiScroll.clamp(filterOffset, filterContentH, popH)
-
-    -- anchor under the combo row using window-relative layout constants (tweak DIV / PAD if misaligned)
-    local popX = geom.x + PAD + ICON_MARGIN
-    local popY = geom.y + PAD + TITLE_H + DIV + TAB_H + DIV + SEARCH_H + COMBO_H
 
     local pane = scrollPane('filterDD', popW, popH, nodes, filterContentH, filterOffset,
         function(d) filterOffset = uiScroll.clamp(filterOffset + d, filterContentH, popH); applyFilterOffset() end,
         function() end)
-
-    return {
-        layer = POPUP_LAYER,
-        type = ui.TYPE.Widget,
-        props = { size = logicalScreen() },   -- full-screen backdrop; a press outside the box closes the popover
-        events = { mousePress = async:callback(function() closeFilterPopup() end) },
-        content = ui.content {
-            {   -- solid box (covers the list); propagateEvents=false so inside-clicks don't hit the backdrop
-                name = 'filterPop', type = ui.TYPE.Container, template = I.MWUI.templates.boxSolid,
-                props = { position = v2(popX, popY), propagateEvents = false },
-                content = ui.content { pane },
-            },
-        },
-    }
+    -- under the combo row, aligned with the combo box
+    return popover('filterPop', v2(geom.x + L.PAD + L.ICON_MARGIN, searchRowBottom() + L.COMBO_H), pane)
 end
 
 openFilterPopup = function()
@@ -1361,12 +1479,13 @@ openFilterPopup = function()
     if ok then popupEl = el else dbg('filter popup create failed:', tostring(el)) end
 end
 
-closeFilterPopup = function()
+-- Close whichever popover is open (filter or sort).
+closePopup = function()
     if popupEl then pcall(function() popupEl:destroy() end); popupEl = nil end
 end
 
 toggleFilterPopup = function()
-    if popupEl then closeFilterPopup() else openFilterPopup() end
+    if popupEl then closePopup() else openFilterPopup() end
 end
 
 -- One implementation of "move a scroll pane to its current offset" — shared by every apply<X>Offset below,
@@ -1387,8 +1506,8 @@ local function applyScrollPane(cfg)
     end
     local thumb = cfg.find(unpack(cfg.thumb))
     if thumb then
-        local trackH = cfg.viewH - 2 * ARROW_H
-        thumb.props.position = v2(2, ARROW_H + uiScroll.thumb(cfg.contentH, cfg.viewH, trackH, offset).top)
+        local trackH = cfg.viewH - 2 * L.ARROW_H
+        thumb.props.position = v2(2, L.ARROW_H + uiScroll.thumb(cfg.contentH, cfg.viewH, trackH, offset).top)
     end
     cfg.el:update()
     return offset
@@ -1404,10 +1523,10 @@ end
 
 local function topicDims(s)
     local listW = math.max(160, math.floor(s.innerW * topicListFrac))
-    local detailW = s.innerW - listW - DETAIL_GAP - 2
+    local detailW = s.innerW - listW - L.DETAIL_GAP - 2
     -- list viewport = content minus the fixed search row (top) and the status strip (bottom), mirroring
     -- the Quests left column (search + list + status).
-    return listW, detailW, s.contentH - SEARCH_H - STATUS_H
+    return listW, detailW, s.contentH - L.SEARCH_H - L.STATUS_H
 end
 
 -- The Topics counter text: shown (after the search filter) / total, mirroring the Quests strip.
@@ -1421,7 +1540,7 @@ local function topicStatusStrip(listW)
     return {
         name = 'topicStatus',
         type = ui.TYPE.Widget,
-        props = { size = v2(listW, STATUS_H) },
+        props = { size = v2(listW, L.STATUS_H) },
         content = ui.content {
             { template = I.MWUI.templates.horizontalLine },   -- top border (y = 0)
             {
@@ -1441,15 +1560,26 @@ end
 local function topicRow(t, W)
     local id = t.id
     local color = (id == selectedTopic) and components.WHITE or components.fontColors().normal
+    local row = { { props = { size = v2(L.PAD, 0) } } }
+    if t.pinned then   -- bookmark star before the name, like the markers on quest rows
+        row[#row + 1] = { type = ui.TYPE.Image, props = { size = v2(14, 14), resource = ui.texture { path = L.PIN_ICON } } }
+        row[#row + 1] = { props = { size = v2(3, 0) } }
+    end
+    row[#row + 1] = { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
+                      props = { text = t.name, textColor = color } }
     return {
-        type = ui.TYPE.Flex, props = { horizontal = true, size = v2(W, TPC_ROW_H), autoSize = false,
+        type = ui.TYPE.Flex, props = { horizontal = true, size = v2(W, L.TPC_ROW_H), autoSize = false,
                                        arrange = ui.ALIGNMENT.Center },
-        content = ui.content {
-            { props = { size = v2(PAD, 0) } },
-            { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
-              props = { text = t.name, textColor = color } },
-        },
-        events = { mouseClick = async:callback(function() selectTopic(id) end) },
+        content = ui.content(row),
+        events = { mouseClick = async:callback(function()
+            -- Ctrl+click bookmarks (keeps the selection), like pinning a quest; a plain click selects.
+            if input.isCtrlPressed() then
+                I.QuestmanData.toggleTopicPin(id)
+                refreshTopicList()   -- re-order + the star; partial, so the search field keeps focus
+            else
+                selectTopic(id)
+            end
+        end) },
     }
 end
 
@@ -1460,11 +1590,11 @@ end
 -- the FULL height via `topicLContentH` (set by the caller). `topics` is the sorted+filtered list.
 local function buildTopicSlice(topics, offset, viewH, W)
     local n = #topics
-    local firstVisible = math.floor((offset or 0) / TPC_ROW_H) + 1          -- 1-based topmost visible row
-    local first = math.max(1, firstVisible - VLIST_BUFFER)
-    local last = math.min(n, firstVisible + math.ceil(viewH / TPC_ROW_H) + VLIST_BUFFER)
+    local firstVisible = math.floor((offset or 0) / L.TPC_ROW_H) + 1          -- 1-based topmost visible row
+    local first = math.max(1, firstVisible - L.VLIST_BUFFER)
+    local last = math.min(n, firstVisible + math.ceil(viewH / L.TPC_ROW_H) + L.VLIST_BUFFER)
     local nodes = {}
-    if first > 1 then nodes[#nodes + 1] = { props = { size = v2(0, (first - 1) * TPC_ROW_H) } } end
+    if first > 1 then nodes[#nodes + 1] = { props = { size = v2(0, (first - 1) * L.TPC_ROW_H) } } end
     for i = first, last do nodes[#nodes + 1] = topicRow(topics[i], W) end
     return nodes
 end
@@ -1475,14 +1605,21 @@ local function buildTopicDetailNodes(topics, W)
     local sel
     for _, t in ipairs(topics) do if t.id == selectedTopic then sel = t; break end end
     if not sel then
-        topicRContentH = ROW_H
-        vitems.topicR = { { node = components.textLine(l10n('topic_none_selected')), h = ROW_H } }
+        topicRContentH = L.ROW_H
+        vitems.topicR = { { node = components.textLine(l10n('topic_none_selected')), h = L.ROW_H } }
         return
     end
     local nodes, h = {}, 0
     local function push(node, height) nodes[#nodes + 1] = { node = node, h = height }; h = h + height end
-    push(components.header(sel.name), TITLE_H)
-    push({ props = { size = v2(0, PAD) } }, PAD)
+    -- Search matches painted white, as on the quest detail (each closing tag restores the template colour).
+    local matchHex = components.colorHex(components.WHITE)
+    -- Title row: topic name (grows) + the bookmark toggle, like the quest detail's pin button.
+    local pinBtn = iconToggle(L.PIN_ICON, sel.pinned,
+        function() I.QuestmanData.toggleTopicPin(sel.id); refreshTopicList() end,
+        function() return sel.pinned and l10n('unpin_topic') or l10n('pin_topic') end)
+    push(detailTitleRow(sel.name, topicQuery, W, { pinBtn }), L.TITLE_H)
+    push({ props = { size = v2(0, L.PAD) } }, L.PAD)
+    local textHex = components.colorHex(I.MWUI.templates.textParagraph.props.textColor)
     -- Speaker name on its own line (brown, LABEL_COLOR), then the line text below it. Consecutive lines
     -- from the SAME speaker collapse under a single name label -- the name is only re-printed when the
     -- speaker changes. MyGUI parses #RRGGBB codes inside Text and getTopicLines strips '#', so the inline
@@ -1501,7 +1638,9 @@ local function buildTopicDetailNodes(topics, W)
             if prevActor ~= nil then push({ props = { size = v2(0, 6) } }, 6) end   -- breathing room before a new speaker
             push(components.paragraph(('#%s%s:'):format(brownHex, actor), W), uiScroll.estimateTextHeight(actor .. ':', W) + 2)
         end
-        push(components.paragraph(raw, W), uiScroll.estimateTextHeight(raw, W) + 2)
+        -- Height from the UNTAGGED text (the estimate counts characters; the tags are not drawn).
+        push(components.paragraph(uiSearch.highlight(raw, topicQuery, matchHex, textHex), W),
+             uiScroll.estimateTextHeight(raw, W) + 2)
         push({ props = { size = v2(0, 4) } }, 4)   -- gap between lines
         prevActor = actor
     end
@@ -1510,68 +1649,29 @@ local function buildTopicDetailNodes(topics, W)
     -- clickable rows below the conversation instead of highlighting them in place.
     local links = I.QuestmanData.getTopicLinks(sel.id)
     if #links > 0 then
-        push({ props = { size = v2(0, PAD) } }, PAD)
-        push(components.subtitle(l10n('related_topics')), TITLE_H)
+        push({ props = { size = v2(0, L.PAD) } }, L.PAD)
+        push(components.subtitle(l10n('related_topics')), L.TITLE_H)
         for _, lk in ipairs(links) do
             local id = lk.id
-            push({
-                type = ui.TYPE.Flex, props = { horizontal = true, size = v2(W, TPC_ROW_H), autoSize = false,
-                                               arrange = ui.ALIGNMENT.Center },
-                content = ui.content {
-                    components.link(lk.name, function() selectTopic(id) end),
-                },
-            }, TPC_ROW_H)
+            push(linkRow(lk.name, function() selectTopic(id) end, W), L.TPC_ROW_H)
         end
     end
     topicRContentH = h
     vitems.topicR = nodes
 end
 
--- The Topics-page search row (no funnel): [margin][search box grow]. Mirrors the Quests search box; its
--- textChanged does a PARTIAL list refresh (refreshTopicList) so the field keeps keyboard focus.
+-- The Topics-page search row (no funnel): [margin][search box grow].
 local function buildTopicSearchRow(listW)
-    local PH = l10n('search_placeholder')
-    local input
-    input = {
-        name = 'topicSearchInput', template = I.MWUI.templates.textEditLine,
-        props = {
-            text = (topicQuery == '') and PH or topicQuery,
-            textColor = (topicQuery == '') and components.GRAY or components.WHITE,
-            relativeSize = v2(1, 0), size = v2(-12, 0), position = v2(6, 0),
-            relativePosition = v2(0, 0.5), anchor = v2(0, 0.5),
-        },
-        events = {
-            textChanged = async:callback(function(text)
-                topicQuery = text
-                topicLOffset = 0
-                input.props.text = text                       -- write back so update() won't blank it
-                input.props.textColor = components.WHITE
-                refreshTopicList()
-            end),
-            focusGain = async:callback(function()
-                if topicQuery == '' then
-                    input.props.text = ''; input.props.textColor = components.WHITE
-                    if menu then pcall(menu.update, menu) end
-                end
-            end),
-            focusLoss = async:callback(function()
-                if topicQuery == '' then
-                    input.props.text = PH; input.props.textColor = components.GRAY
-                    if menu then pcall(menu.update, menu) end
-                end
-            end),
-        },
-    }
     return {
         name = 'topicSearchRow', type = ui.TYPE.Flex,
-        props = { horizontal = true, size = v2(listW, SEARCH_H), autoSize = false, arrange = ui.ALIGNMENT.Center },
+        props = { horizontal = true, size = v2(listW, L.SEARCH_H), autoSize = false, arrange = ui.ALIGNMENT.Center },
         content = ui.content {
-            { props = { size = v2(ICON_MARGIN, 0) } },
-            {
-                name = 'topicSearch', type = ui.TYPE.Widget, props = { size = v2(0, SEARCH_H) },
-                external = { grow = 1 },
-                content = components.framed { input },
-            },
+            { props = { size = v2(L.ICON_MARGIN, 0) } },
+            searchBox('topicSearch', function() return topicQuery end, function(text)
+                topicQuery = text
+                topicLOffset = 0
+                refreshTopicList()
+            end),
         },
     }
 end
@@ -1582,11 +1682,11 @@ local function buildTopicsPage(s)
     for _, t in ipairs(all) do if t.id == selectedTopic then found = true; break end end
     if not found then selectedTopic = all[1] and all[1].id or nil end
     local listW, detailW, listViewH = topicDims(s)
-    topicListCache = uiSearch.filter(all, topicQuery, { searchEntries = false })
-    topicLContentH = #topicListCache * TPC_ROW_H           -- FULL height (drives the scrollbar), not the slice
+    topicListCache = searchTopics()
+    topicLContentH = #topicListCache * L.TPC_ROW_H           -- FULL height (drives the scrollbar), not the slice
     topicLOffset = uiScroll.clamp(topicLOffset, topicLContentH, listViewH)
-    local listNodes = buildTopicSlice(topicListCache, topicLOffset, listViewH, listW - BAR_W)
-    buildTopicDetailNodes(all, detailW - BAR_W)   -- fills vitems.topicR + sets topicRContentH
+    local listNodes = buildTopicSlice(topicListCache, topicLOffset, listViewH, listW - L.BAR_W)
+    buildTopicDetailNodes(all, detailW - L.BAR_W)   -- fills vitems.topicR + sets topicRContentH
     topicROffset = uiScroll.clamp(topicROffset, topicRContentH, s.contentH)
     local detailNodes = buildVarSlice(vitems.topicR, topicROffset, s.contentH)   -- visible slice only
     return {
@@ -1596,6 +1696,7 @@ local function buildTopicsPage(s)
             {   -- LEFT column: search (fixed) above the scrollable topic list above the status strip
                 name = 'topicLeftCol', type = ui.TYPE.Flex,
                 props = { horizontal = false, size = v2(listW, s.contentH), autoSize = false },
+                events = listColumnEvents(function() topicActive = 'left' end, function() topicActive = 'right' end),
                 content = ui.content {
                     buildTopicSearchRow(listW),
                     scrollPane('topicList', listW, listViewH, listNodes, topicLContentH, topicLOffset,
@@ -1608,7 +1709,7 @@ local function buildTopicsPage(s)
                         function() settings:set('TopicListWidthPercent', math.floor(topicListFrac * 100 + 0.5)) end),
             scrollPane('topicDetail', detailW, s.contentH, detailNodes, topicRContentH, topicROffset,
                 function(d) topicROffset = uiScroll.clamp(topicROffset + d, topicRContentH, s.contentH); applyTopicROffset() end,
-                function() activePane = 'topics'; topicActive = 'right' end, SCROLL_SLACK),   -- estimated height -> slack
+                function() activePane = 'topics'; topicActive = 'right' end, L.SCROLL_SLACK),   -- estimated height -> slack
         },
     }
 end
@@ -1630,10 +1731,10 @@ refreshTopicList = function()
     if not menu then return end
     local s = sizes()
     local listW, _, listViewH = topicDims(s)
-    topicListCache = uiSearch.filter(allTopics(), topicQuery, { searchEntries = false })   -- filter the cache, no re-scan
-    topicLContentH = #topicListCache * TPC_ROW_H
+    topicListCache = searchTopics()   -- searches the cached topic list, no re-scan
+    topicLContentH = #topicListCache * L.TPC_ROW_H
     topicLOffset = uiScroll.clamp(topicLOffset, topicLContentH, listViewH)
-    local nodes = buildTopicSlice(topicListCache, topicLOffset, listViewH, listW - BAR_W)
+    local nodes = buildTopicSlice(topicListCache, topicLOffset, listViewH, listW - L.BAR_W)
     local inner = node(PATH.topicListInner)
     if inner then
         inner.content = ui.content(nodes)
@@ -1641,12 +1742,19 @@ refreshTopicList = function()
     end
     local bar = node(PATH.topicListBar)
     if bar then
-        local trackH = listViewH - 2 * ARROW_H
+        local trackH = listViewH - 2 * L.ARROW_H
         local t = uiScroll.thumb(topicLContentH, listViewH, trackH, topicLOffset)
         bar.props = bar.props or {}; bar.props.visible = t.visible
     end
     local counter = node(PATH.topicCounter)
     if counter then counter.props.text = topicCounterText() end   -- shown/total tracks the filter
+    -- Re-paint the search matches in the open topic: rebuild only the detail items and re-slice them (a
+    -- full rebuildTopics would recreate the search field and drop its focus). Heights don't change -- they
+    -- are estimated from the untagged text -- so the detail scrollbar stays valid.
+    local _, detailW = topicDims(s)
+    buildTopicDetailNodes(allTopics(), detailW - L.BAR_W)
+    local detailInner = node(PATH.topicDetailInner)
+    if detailInner then detailInner.content = ui.content(buildVarSlice(vitems.topicR, topicROffset, s.contentH)) end
     menu:update()
 end
 
@@ -1661,7 +1769,7 @@ end
 
 -- Select a topic AND make sure the Topics page is showing it — used by "Related topics" links on the
 -- quest detail page (cross-page jump). When already on Topics this is just selectTopic; otherwise it
--- switches the page (mirroring the tab() reset) so buildTopicsPage renders with the new selection.
+-- switches the page so buildTopicsPage renders with the new selection.
 openTopic = function(id)
     selectedTopic = id
     dbg('open topic (link)', id)
@@ -1670,250 +1778,252 @@ openTopic = function(id)
     if activePage == 'topics' then
         rebuildTopics()
     else
-        activePage = 'topics'
-        listOffset = 0
-        closeFilterPopup()   -- close the popover; the Quests filter row + selection persist for our return
-        switchPage()
+        goToPage('topics')
     end
 end
 
 -- ============================================================================
--- Records page — journal records that aren't real quests (see questProvider.getRecords). Structurally a
--- near-clone of the Topics page: left list + search + status strip, right detail. The detail differs:
--- dated journal entries (newest-first) instead of speaker-tagged conversation lines.
+-- Journal page — the whole journal as ONE chronological feed (newest first) in a centered column, like a
+-- diary. A mode bar on top switches between the whole journal and only the entries outside quests (what
+-- used to be the Records tab). journalFeed (pure) decides the rows -- day headers, quest labels, the mode
+-- filter; this section only draws and scrolls them.
 -- ============================================================================
 
-function records.dims(s)
-    local listW = math.max(160, math.floor(s.innerW * records.listFrac))
-    local detailW = s.innerW - listW - DETAIL_GAP - 2
-    return listW, detailW, s.contentH - SEARCH_H - STATUS_H
+-- colW = the text column, capped (lines across a wide screen read badly); viewH = the feed height under the
+-- mode bar and its divider line; colX = the column's left edge, centered in the feed viewport.
+function journal.dims(s)
+    local vpW = s.innerW - L.BAR_W
+    local colW = math.min(vpW - 2 * L.PAD, L.JOURNAL_COL_W)
+    return colW, s.contentH - L.JOURNAL_BAR_H - L.DIV, math.floor((vpW - colW) / 2)
 end
 
-function records.counterText()
-    return #(records.listCache or {}) .. ' / ' .. #records.all()
-end
-
-function records.statusStrip(listW)
+-- `──── 16 Last Seed (Day 12) ────`: one per in-game day.
+function journal.dayRow(e, colW)
+    local function line()
+        return { template = I.MWUI.templates.horizontalLine,
+                 props = { size = v2(0, 2), relativeSize = v2(0, 0) }, external = { grow = 1 } }
+    end
     return {
-        name = 'recordStatus',
-        type = ui.TYPE.Widget,
-        props = { size = v2(listW, STATUS_H) },
+        type = ui.TYPE.Flex,
+        props = { horizontal = true, size = v2(colW, L.JOURNAL_DAY_H), autoSize = false, arrange = ui.ALIGNMENT.Center },
         content = ui.content {
-            { template = I.MWUI.templates.horizontalLine },
-            {
-                name = 'recordCounter',
-                type = ui.TYPE.Text,
-                template = I.MWUI.templates.textNormal,
-                props = { text = records.counterText(),
-                          textColor = components.GRAY, textSize = 14,
-                          position = v2(-2, 0), relativePosition = v2(1, 0.5), anchor = v2(1, 0.5) },
-            },
-        },
-    }
-end
-
--- One clickable record row (title/snippet only, no icon), highlighted when selected.
-function records.row(r, W)
-    local id = r.id
-    local color = (id == records.selected) and components.WHITE or components.fontColors().normal
-    return {
-        type = ui.TYPE.Flex, props = { horizontal = true, size = v2(W, TPC_ROW_H), autoSize = false,
-                                       arrange = ui.ALIGNMENT.Center },
-        content = ui.content {
-            { props = { size = v2(PAD, 0) } },
+            line(),
+            { props = { size = v2(L.PAD, 0) } },
             { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
-              props = { text = r.name, textColor = color } },
+              props = { text = entryDateLabel(e) or '', textColor = components.LABEL_COLOR } },
+            { props = { size = v2(L.PAD, 0) } },
+            line(),
         },
-        events = { mouseClick = async:callback(function() records.select(id) end) },
     }
 end
 
--- Virtualized record list body (analog of buildTopicSlice).
-function records.buildSlice(list, offset, viewH, W)
-    local n = #list
-    local firstVisible = math.floor((offset or 0) / TPC_ROW_H) + 1
-    local first = math.max(1, firstVisible - VLIST_BUFFER)
-    local last = math.min(n, firstVisible + math.ceil(viewH / TPC_ROW_H) + VLIST_BUFFER)
-    local nodes = {}
-    if first > 1 then nodes[#nodes + 1] = { props = { size = v2(0, (first - 1) * TPC_ROW_H) } } end
-    for i = first, last do nodes[#nodes + 1] = records.row(list[i], W) end
+-- The label above a run of entries: the quest name as a link (blue like the topic links, so it reads as
+-- clickable; opens the quest on the Quests tab), or a gray "Note" for an entry outside quests (nothing to
+-- open).
+function journal.labelRow(e, colW)
+    local label
+    if e.record then
+        label = { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
+                  props = { text = l10n('journal_no_quest'), textColor = components.GRAY } }
+    else
+        local id = e.questId
+        label = components.link(e.questName or id, function() journal.openQuest(id) end)
+    end
+    return {
+        type = ui.TYPE.Flex,
+        props = { horizontal = true, size = v2(colW, L.TPC_ROW_H), autoSize = false, arrange = ui.ALIGNMENT.Center },
+        content = ui.content { label },
+    }
+end
+
+-- Built for 10k-entry journals (rebuilding every row layout per resize event and every visible paragraph
+-- per wheel step froze a 9k-entry one):
+--  * items are DATA only -- { kind, entry, h, y } -- and widgets are made just for the rendered slice
+--    (journal.nodeFor);
+--  * the item list is cached until the feed (a new one per open), the mode or the column width changes,
+--    so a resize that keeps the (capped) width and every scroll reuse it;
+--  * the slice covers a screen of slack above and below (journal.sliceNodes), and journal.scrollBy only
+--    re-renders once the viewport runs out of it -- most wheel steps just move the content.
+-- Returns true when the list was rebuilt (for the timing log).
+function journal.buildItems(colW)
+    local feed = I.QuestmanData.getJournalFeed()
+    if journal.items and journal.itemsFeed == feed and journal.itemsMode == journal.mode
+        and journal.itemsColW == colW and journal.itemsLimit == journal.limit then
+        return false
+    end
+    local rows = journalFeed.rows(feed, journal.mode, journal.limit)
+    journal.count, journal.more = rows.count, rows.more
+    local items, y = {}, 0
+    local function add(kind, entry, h)
+        items[#items + 1] = { kind = kind, entry = entry, h = h, y = y }
+        y = y + h
+    end
+    if #rows.rows == 0 then add('empty', nil, L.ROW_H) end
+    for i, row in ipairs(rows.rows) do
+        if row.kind == 'day' then
+            if i > 1 then add('gap', nil, L.PAD) end   -- breathing room between days
+            add('day', row.entry, L.JOURNAL_DAY_H)
+        elseif row.kind == 'label' then
+            add('label', row.entry, L.TPC_ROW_H)
+        else
+            -- estimated like the quest detail's, so the slice is found without measuring widgets
+            add('text', row.entry, uiScroll.estimateTextHeight(row.entry.text or '', colW) + 2)
+            add('gap', nil, L.ENTRY_GAP)
+        end
+    end
+    journal.items, journal.itemsFeed, journal.itemsMode = items, feed, journal.mode
+    journal.itemsColW, journal.itemsLimit = colW, journal.limit
+    journal.contentH = y
+    return true
+end
+
+-- The widget for one feed item (only ever called for the rendered slice).
+function journal.nodeFor(it, colW)
+    if it.kind == 'day' then return journal.dayRow(it.entry, colW) end
+    if it.kind == 'label' then return journal.labelRow(it.entry, colW) end
+    if it.kind == 'text' then return components.paragraph(it.entry.text or '', colW) end
+    if it.kind == 'empty' then return components.textLine(l10n('journal_empty')) end
+    return { props = { size = v2(0, it.h) } }   -- gap
+end
+
+-- Index of the item covering pixel row `y` (binary search: items are sorted by y), so finding the slice
+-- doesn't walk the whole journal.
+function journal.firstAt(y)
+    local items = journal.items
+    local lo, hi = 1, #items
+    while lo < hi do
+        local mid = math.floor((lo + hi) / 2)
+        if items[mid].y + items[mid].h <= y then lo = mid + 1 else hi = mid end
+    end
+    return lo
+end
+
+-- Widgets for the items covering [offset - viewH, offset + 2 * viewH], led by one spacer as tall as
+-- everything above them. Records the covered pixel range in journal.shownTop / shownBottom.
+function journal.sliceNodes(offset, viewH, colW)
+    local items = journal.items
+    local first = journal.firstAt(math.max(0, offset - viewH))
+    local bottom = offset + 2 * viewH
+    local nodes, last = {}, first
+    if items[first] and items[first].y > 0 then nodes[1] = { props = { size = v2(0, items[first].y) } } end
+    for i = first, #items do
+        if items[i].y >= bottom then break end
+        nodes[#nodes + 1] = journal.nodeFor(items[i], colW)
+        last = i
+    end
+    journal.shownTop = items[first] and items[first].y or 0
+    journal.shownBottom = items[last] and (items[last].y + items[last].h) or 0
     return nodes
 end
 
--- RIGHT: selected record -> title header + its journal entries (newest-first), each preceded by its
--- in-game date (localized via OpenMW's Calendar context). `list` is the UNFILTERED list (the detail
--- survives an active search). Sets records.rContentH.
-function records.detailNodes(list, W)
-    local sel
-    for _, r in ipairs(list) do if r.id == records.selected then sel = r; break end end
-    if not sel then
-        records.rContentH = ROW_H
-        vitems.recordR = { { node = components.textLine(l10n('records_empty')), h = ROW_H } }
-        return
+-- The mode switch (two tab-style buttons, centered) + the shown-entries count on the right.
+function journal.modeBar(s)
+    local function modeButton(mode, key)
+        return components.button(l10n(key), function() journal.setMode(mode) end, { active = journal.mode == mode })
     end
-    local nodes, h = {}, 0
-    local function push(node, height) nodes[#nodes + 1] = { node = node, h = height }; h = h + height end
-    push(components.header(sel.name), TITLE_H)
-    push({ props = { size = v2(0, PAD) } }, PAD)
-    local brownHex = components.colorHex(components.LABEL_COLOR)
-    local entries = sel.entries or {}
-    for i = #entries, 1, -1 do          -- newest-first, mirroring the quest/topic detail
-        local e = entries[i]
-        local dateLabel = entryDateLabel(e)
-        if dateLabel then
-            push(components.paragraph(('#%s%s'):format(brownHex, dateLabel), W),
-                 uiScroll.estimateTextHeight(dateLabel, W) + 2)
-        end
-        push(components.paragraph(e.text or '', W), uiScroll.estimateTextHeight(e.text or '', W) + 2)
-        push({ props = { size = v2(0, 6) } }, 6)   -- gap between entries
-    end
-    -- "Related topics": the accumulated topics this record's entries hyperlink to (@keyword#). Clicking
-    -- jumps to the Topics page (cross-page), like the quest detail.
-    local links = I.QuestmanData.getQuestLinks(sel.id)
-    if #links > 0 then
-        push({ props = { size = v2(0, PAD) } }, PAD)
-        push(components.subtitle(l10n('related_topics')), TITLE_H)
-        for _, lk in ipairs(links) do
-            local id = lk.id
-            push({
-                type = ui.TYPE.Flex, props = { horizontal = true, size = v2(W, TPC_ROW_H), autoSize = false,
-                                               arrange = ui.ALIGNMENT.Center },
-                content = ui.content {
-                    components.link(lk.name, function() openTopic(id) end),
-                },
-            }, TPC_ROW_H)
-        end
-    end
-    records.rContentH = h
-    vitems.recordR = nodes
-end
-
--- The Records-page search row. Mirrors the Topics search box; textChanged does a PARTIAL list refresh so
--- the field keeps keyboard focus.
-function records.searchRow(listW)
-    local PH = l10n('search_placeholder')
-    local input
-    input = {
-        name = 'recordSearchInput', template = I.MWUI.templates.textEditLine,
-        props = {
-            text = (records.query == '') and PH or records.query,
-            textColor = (records.query == '') and components.GRAY or components.WHITE,
-            relativeSize = v2(1, 0), size = v2(-12, 0), position = v2(6, 0),
-            relativePosition = v2(0, 0.5), anchor = v2(0, 0.5),
-        },
-        events = {
-            textChanged = async:callback(function(text)
-                records.query = text
-                records.lOffset = 0
-                input.props.text = text
-                input.props.textColor = components.WHITE
-                records.refreshList()
-            end),
-            focusGain = async:callback(function()
-                if records.query == '' then
-                    input.props.text = ''; input.props.textColor = components.WHITE
-                    if menu then pcall(menu.update, menu) end
-                end
-            end),
-            focusLoss = async:callback(function()
-                if records.query == '' then
-                    input.props.text = PH; input.props.textColor = components.GRAY
-                    if menu then pcall(menu.update, menu) end
-                end
-            end),
-        },
-    }
     return {
-        name = 'recordSearchRow', type = ui.TYPE.Flex,
-        props = { horizontal = true, size = v2(listW, SEARCH_H), autoSize = false, arrange = ui.ALIGNMENT.Center },
+        name = 'journalBar', type = ui.TYPE.Widget, props = { size = v2(s.innerW, L.JOURNAL_BAR_H) },
         content = ui.content {
-            { props = { size = v2(ICON_MARGIN, 0) } },
-            {
-                name = 'recordSearch', type = ui.TYPE.Widget, props = { size = v2(0, SEARCH_H) },
-                external = { grow = 1 },
-                content = components.framed { input },
-            },
+            { type = ui.TYPE.Flex,
+              props = { horizontal = true, arrange = ui.ALIGNMENT.Center,
+                        relativePosition = v2(0.5, 0.5), anchor = v2(0.5, 0.5) },
+              content = ui.content {
+                  modeButton(journalFeed.MODE_ALL, 'journal_mode_all'),
+                  { props = { size = v2(L.TAB_GAP, 0) } },
+                  modeButton(journalFeed.MODE_RECORDS, 'journal_mode_records'),
+              } },
+            { type = ui.TYPE.Text, template = I.MWUI.templates.textNormal,
+              props = { text = tostring(journal.count), textColor = components.GRAY, textSize = 14,
+                        position = v2(-L.PAD, 0), relativePosition = v2(1, 0.5), anchor = v2(1, 0.5) } },
         },
     }
 end
 
-function records.buildPage(s)
-    local all = records.all()                               -- sorted, UNFILTERED (drives the detail + auto-select)
-    local found = false
-    for _, r in ipairs(all) do if r.id == records.selected then found = true; break end end
-    if not found then records.selected = all[1] and all[1].id or nil end
-    local listW, detailW, listViewH = records.dims(s)
-    records.listCache = uiSearch.filter(all, records.query, { searchEntries = true })
-    records.lContentH = #records.listCache * TPC_ROW_H
-    records.lOffset = uiScroll.clamp(records.lOffset, records.lContentH, listViewH)
-    local listNodes = records.buildSlice(records.listCache, records.lOffset, listViewH, listW - BAR_W)
-    records.detailNodes(all, detailW - BAR_W)   -- fills vitems.recordR + sets records.rContentH
-    records.rOffset = uiScroll.clamp(records.rOffset, records.rContentH, s.contentH)
-    local detailNodes = buildVarSlice(vitems.recordR, records.rOffset, s.contentH)
+function journal.buildPage(s)
+    local colW, viewH, colX = journal.dims(s)
+    local t0 = core.getRealTime()
+    local rebuilt = journal.buildItems(colW)
+    journal.offset = uiScroll.clamp(journal.offset, journal.contentH, viewH)
+    local nodes = journal.sliceNodes(journal.offset, viewH, colW)
+    dbg(('Journal feed: %d entries, %d items %s, %d widgets in slice (%.0f ms)'):format(journal.count,
+        #journal.items, rebuilt and 'rebuilt' or 'cached', #nodes, (core.getRealTime() - t0) * 1000))
+    local feedPane = scrollPane('journalFeed', s.innerW, viewH, nodes, journal.contentH, journal.offset,
+        journal.scrollBy, function() activePane = 'journal' end, L.SCROLL_SLACK)   -- estimated height -> slack
+    -- Center the column by shifting the whole inner Flex once (journal.scrollBy keeps the x).
+    feedPane.content.journalFeedVp.content.journalFeedInner.props.position = v2(colX, -journal.offset)
     return {
-        name = 'recordsPage', type = ui.TYPE.Flex,
-        props = { horizontal = true, size = v2(s.innerW, s.contentH), autoSize = false },
+        name = 'journalPage', type = ui.TYPE.Flex,
+        props = { horizontal = false, size = v2(s.innerW, s.contentH), autoSize = false },
         content = ui.content {
-            {
-                name = 'recordLeftCol', type = ui.TYPE.Flex,
-                props = { horizontal = false, size = v2(listW, s.contentH), autoSize = false },
-                content = ui.content {
-                    records.searchRow(listW),
-                    scrollPane('recordList', listW, listViewH, listNodes, records.lContentH, records.lOffset,
-                        function(d) records.lOffset = uiScroll.clamp(records.lOffset + d, records.lContentH, listViewH); records.applyLeft() end,
-                        function() activePane = 'records'; records.active = 'left' end),
-                    records.statusStrip(listW),
-                },
-            },
-            makeDivider(function() return records.listFrac end, function(v) records.listFrac = v end,
-                        function() settings:set('RecordListWidthPercent', math.floor(records.listFrac * 100 + 0.5)) end),
-            scrollPane('recordDetail', detailW, s.contentH, detailNodes, records.rContentH, records.rOffset,
-                function(d) records.rOffset = uiScroll.clamp(records.rOffset + d, records.rContentH, s.contentH); records.applyRight() end,
-                function() activePane = 'records'; records.active = 'right' end, SCROLL_SLACK),
+            journal.modeBar(s),
+            { template = I.MWUI.templates.horizontalLine, external = { stretch = 1 } },
+            feedPane,
         },
     }
 end
 
--- Full rebuild of the Records page (select / resize). Offsets persist.
-function records.rebuild()
+-- Full rebuild of the Journal page (mode switch / resize). The offset persists.
+function journal.rebuild()
     if not menu then return end
     components.dismissTooltip()
     local panes = node(PATH.panes)
-    if panes then panes.content = ui.content({ records.buildPage(sizes()) }) end
+    if panes then panes.content = ui.content({ journal.buildPage(sizes()) }) end
     menu:update()
 end
 
--- Partial refresh of ONLY the record list (search typing) — keeps the search field's focus.
-function records.refreshList()
+-- Scroll the feed by `d` px (wheel, scrollbar, arrow keys, D-pad). Re-renders the slice only when the
+-- viewport leaves the rendered range; otherwise it just moves the content (see journal.buildItems).
+function journal.scrollBy(d)
     if not menu then return end
-    local s = sizes()
-    local listW, _, listViewH = records.dims(s)
-    records.listCache = uiSearch.filter(records.all(), records.query, { searchEntries = true })
-    records.lContentH = #records.listCache * TPC_ROW_H
-    records.lOffset = uiScroll.clamp(records.lOffset, records.lContentH, listViewH)
-    local nodes = records.buildSlice(records.listCache, records.lOffset, listViewH, listW - BAR_W)
-    local inner = node(PATH.recordListInner)
-    if inner then
-        inner.content = ui.content(nodes)
-        inner.props.position = v2(0, -records.lOffset)
+    local t0 = core.getRealTime()
+    local colW, viewH, colX = journal.dims(sizes())
+    journal.offset = uiScroll.clamp(journal.offset + d, journal.contentH, viewH)
+    -- Lazy loading: pushing down at the very bottom adds the next page of older entries. The page is
+    -- rebuilt (offset kept), so the scrollbar thumb shrinks and moves up over the longer feed.
+    if d > 0 and journal.more and journal.offset >= uiScroll.maxOffset(journal.contentH, viewH) then
+        journal.limit = journal.limit + L.JOURNAL_PAGE
+        journal.rebuild()
+        dbg(('Journal: loaded up to %d entries (%.0f ms)'):format(journal.limit, (core.getRealTime() - t0) * 1000))
+        return
     end
-    local bar = node(PATH.recordListBar)
-    if bar then
-        local trackH = listViewH - 2 * ARROW_H
-        local t = uiScroll.thumb(records.lContentH, listViewH, trackH, records.lOffset)
-        bar.props = bar.props or {}; bar.props.visible = t.visible
+    local inner = node(PATH.journalFeedInner)
+    if not inner then return end
+    local visibleBottom = math.min(journal.offset + viewH, journal.contentH)
+    local rerender = journal.offset < journal.shownTop or visibleBottom > journal.shownBottom
+    if rerender then inner.content = ui.content(journal.sliceNodes(journal.offset, viewH, colW)) end
+    inner.props.position = v2(colX, -journal.offset)
+    local thumb = node(PATH.journalFeedThumb)
+    if thumb then
+        local trackH = viewH - 2 * L.ARROW_H
+        thumb.props.position = v2(2, L.ARROW_H + uiScroll.thumb(journal.contentH, viewH, trackH, journal.offset).top)
     end
-    local counter = node(PATH.recordCounter)
-    if counter then counter.props.text = records.counterText() end
     menu:update()
+    dbg(('Journal scroll: %s (%.1f ms)'):format(rerender and 're-rendered' or 'moved',
+        (core.getRealTime() - t0) * 1000))
 end
 
-function records.select(id)
-    records.selected = id
-    records.rOffset = 0   -- reset the detail scroll for the newly-selected record
-    local t0 = core.getRealTime()
-    records.rebuild()
-    dbg(('Selected record: %s (%.0f ms)'):format(tostring(id), (core.getRealTime() - t0) * 1000))
+-- Remembered across opens (windowStore), like the window position.
+function journal.setMode(mode)
+    if journal.mode == mode then return end
+    journal.mode = mode
+    journal.offset = 0
+    journal.limit = L.JOURNAL_PAGE   -- a fresh mode starts from its newest page again
+    windowStore:set('journalMode', mode)
+    journal.rebuild()
+end
+
+-- Left/right (arrows, D-pad): flip between the two modes.
+function journal.toggleMode()
+    journal.setMode(journal.mode == journalFeed.MODE_ALL and journalFeed.MODE_RECORDS or journalFeed.MODE_ALL)
+end
+
+-- A quest label was clicked: select that quest and switch to the Quests tab (mirrors openTopic). The
+-- detail pane shows it even when the list filters it out (completed / hidden).
+function journal.openQuest(id)
+    selectedId = id
+    detailOffset = 0
+    I.QuestmanData.setLastViewed(id)
+    goToPage('quests')
 end
 
 -- Content of the 'panes' node, swapped by the active page (keeps the 'panes' node identity so all the
@@ -1923,8 +2033,8 @@ local function buildPanesContent(s)
         return { buildStatsPage(s) }
     elseif activePage == 'topics' then
         return { buildTopicsPage(s) }
-    elseif activePage == 'records' then
-        return { records.buildPage(s) }
+    elseif activePage == 'journal' then
+        return { journal.buildPage(s) }
     end
     return {
         buildLeft(s),
@@ -1934,8 +2044,8 @@ local function buildPanesContent(s)
     }
 end
 
--- Rebuild the Quests page in place (re-runs buildLeft -> inserts/removes the dropdown, resizes the list
--- body, refreshes the status strip). Used when the filter dropdown opens/closes or a filter is picked.
+-- Rebuild the Quests page in place (re-runs buildLeft -> inserts/removes the combo row, resizes the list
+-- body, refreshes the status strip). Used when the filter row opens/closes or a filter is picked.
 rebuildQuestPane = function()
     if not menu then return end
     components.dismissTooltip()   -- rebuild destroys hovered widgets; block a click's trailing tooltip re-show
@@ -1946,14 +2056,14 @@ rebuildQuestPane = function()
     refreshDetail()
 end
 
--- Funnel: show/hide the combo row (hiding it also closes any open popover). The filter itself persists.
+-- Funnel: show/hide the combo row. Hiding it also clears the filter and closes any open popover.
 toggleFilterRow = function()
     if activePage ~= 'quests' then return end
     filterRowOn = not filterRowOn
     if not filterRowOn then
         selectedFilter = nil   -- closing the row clears the filter: never keep an active-but-hidden filter
         listOffset = 0         -- scope widens back to all quests, so return the list to the top
-        closeFilterPopup()
+        closePopup()
     end
     rebuildQuestPane()
 end
@@ -1961,7 +2071,7 @@ end
 -- Apply (opt = an option from getFilterOptions) or clear (opt = nil) the filter, then close the popover.
 selectFilter = function(opt)
     selectedFilter = opt and { axis = opt.axis, key = opt.key, label = opt.label } or nil
-    closeFilterPopup()
+    closePopup()
     listOffset = 0
     rebuildQuestPane()   -- combo label + funnel shade + re-filtered list
 end
@@ -1971,12 +2081,13 @@ end
 goToPage = function(page)
     if activePage == page then return end
     activePage = page
+    windowStore:set('activePage', page)   -- reopen on this tab, also after a restart (like journalMode)
     listOffset = 0
-    closeFilterPopup()     -- close the popover; the filter row + selection persist across tabs
+    closePopup()     -- close the popover; the filter row + selection persist across tabs
     switchPage()
 end
 
--- Tab buttons; the active page's button is styled active (blue), like the footer toggle.
+-- Tab buttons; the active page's button is styled active (blue).
 local function tabButtons()
     local function tab(page, key)
         return components.button(l10n(key), function() goToPage(page) end, { active = activePage == page })
@@ -1985,11 +2096,11 @@ local function tabButtons()
     -- TAB_GAP is the spacing between adjacent tabs; reuse it for any future tab button.
     return {
         tab('quests', 'tab_quests'),
-        { props = { size = v2(TAB_GAP, 0) } },
+        { props = { size = v2(L.TAB_GAP, 0) } },
         tab('topics', 'tab_topics'),
-        { props = { size = v2(TAB_GAP, 0) } },
-        tab('records', 'tab_records'),
-        { props = { size = v2(TAB_GAP, 0) } },
+        { props = { size = v2(L.TAB_GAP, 0) } },
+        tab('journal', 'tab_journal'),
+        { props = { size = v2(L.TAB_GAP, 0) } },
         tab('stats', 'tab_stats'),
     }
 end
@@ -1998,10 +2109,63 @@ local function buildTabRow(s)
     return {
         name = 'tabRow',
         type = ui.TYPE.Flex,
-        props = { horizontal = true, size = v2(s.innerW, TAB_H), autoSize = false,
+        props = { horizontal = true, size = v2(s.innerW, L.TAB_H), autoSize = false,
                   arrange = ui.ALIGNMENT.Center },
         content = ui.content(tabButtons()),
     }
+end
+
+-- ---- controller hints via UI Toolkit (optional) ---------------------------------
+-- When the UI Toolkit mod is installed it draws ONE shared bar of controller-button hints at the bottom of the
+-- screen (only while a pad is in use, icons in the player's pad style). We hand it the open page's controls.
+-- Nothing is bundled or required: without the mod -- or on an engine it doesn't run on, like 0.50 --
+-- I.UIToolkit is nil and this does nothing.
+local toolkitHints = {
+    SOURCE = 'Questman',   -- our key in UI Toolkit's list of hint sources
+    MIN_API = 2,           -- Controller.setExternalHints arrived in UI Toolkit API 2 (its 1.1.0)
+}
+
+-- Show `hints` (nil clears ours).
+function toolkitHints.set(hints)
+    local toolkit = I.UIToolkit
+    if not (toolkit and (toolkit.version or 0) >= toolkitHints.MIN_API) then
+        dbg('UI Toolkit hints: skipped, API', tostring(toolkit and toolkit.version))
+        return
+    end
+    -- Another mod's API: a change or an error on its side must never break opening/closing our window.
+    local ok, err = pcall(toolkit.Controller.setExternalHints, toolkitHints.SOURCE, hints)
+    if ok then
+        dbg('UI Toolkit hints:', hints and (#hints .. ' for ' .. activePage) or 'cleared')
+    else
+        dbg('UI Toolkit hints failed:', tostring(err))
+    end
+end
+
+-- The pad controls of a page, in UI Toolkit's hint format. Mirrors onControllerButtonPress.
+function toolkitHints.forPage(page)
+    local BTN = input.CONTROLLER_BUTTON
+    local hints = {}
+    local function add(key, buttons) hints[#hints + 1] = { text = l10n(key), input = buttons } end
+    local upDown = { { id = BTN.DPadUp }, { id = BTN.DPadDown } }
+    if page == 'quests' then
+        add('hint_select', upDown)
+        add('hint_pin', { id = BTN.Y })
+        add('hint_hide', { id = BTN.X })
+    elseif page == 'topics' then
+        add('hint_select', upDown)
+        add('hint_pin', { id = BTN.Y })
+    elseif page == 'journal' then
+        add('hint_scroll', upDown)
+        add('hint_journal_mode', { { id = BTN.DPadLeft }, { id = BTN.DPadRight } })
+    end
+    add('hint_tabs', { { id = BTN.LeftShoulder }, { id = BTN.RightShoulder } })
+    add('hint_close', { id = BTN.B })
+    return hints
+end
+
+-- Re-sync with the window: the open page's hints, or none once closed.
+function toolkitHints.update()
+    toolkitHints.set(menu and toolkitHints.forPage(activePage) or nil)
 end
 
 switchPage = function()
@@ -2014,6 +2178,7 @@ switchPage = function()
     if tabRow then tabRow.content = ui.content(tabButtons()) end   -- refresh active styling
     refreshFooter()   -- footer controls are quest-only -> show/hide per page
     menu:update()
+    toolkitHints.update()
 end
 
 -- The box template autosizes to `main` plus a RZC.border frame on each side; this is the window's true
@@ -2039,6 +2204,10 @@ local function build()
                         name = 'main',
                         type = ui.TYPE.Flex,
                         props = { horizontal = false, size = v2(s.innerW, s.innerH), autoSize = false },
+                        -- Reached only from widgets with no mouseMove handler of their own: the tabs and the
+                        -- footer (the panes and the title bar handle it). Over the window chrome the wheel
+                        -- scrolls the list -- the default (see listColumnEvents).
+                        events = { mouseMove = async:callback(function() activePane = 'list'; topicActive = 'left' end) },
                         content = ui.content {
                             buildTitleBar(s),
                             { template = I.MWUI.templates.horizontalLine, external = { stretch = 1 } },
@@ -2056,13 +2225,13 @@ local function build()
                                 -- footer: left-aligned button row + Close button
                                 name = 'bottomBar',
                                 type = ui.TYPE.Widget,
-                                props = { size = v2(s.innerW, FOOTER_H) },
+                                props = { size = v2(s.innerW, L.FOOTER_H) },
                                 content = ui.content {
                                     {
                                         name = 'footerButtons',
                                         type = ui.TYPE.Flex,
                                         props = { horizontal = true, arrange = ui.ALIGNMENT.Center,
-                                                  position = v2(PAD, 0), relativePosition = v2(0, 0.5), anchor = v2(0, 0.5) },
+                                                  position = v2(L.PAD, 0), relativePosition = v2(0, 0.5), anchor = v2(0, 0.5) },
                                         content = ui.content(footerButtons()),
                                     },
                                     footerClose(),
@@ -2097,7 +2266,7 @@ refreshList = function()
         bar.props.visible = t.props.visible   -- visibility must re-evaluate, not stay frozen at build
     end
     local cnt = node(PATH.listCounter)
-    if cnt then cnt.props.text = #currentOrder .. ' / ' .. listTotal end
+    if cnt then cnt.props.text = #questView.quests .. ' / ' .. listTotal end
     local sl = node(PATH.statusLeft)
     if sl then sl.content = ui.content(statusLeftNodes()) end   -- hidden eye+count
     menu:update()
@@ -2112,7 +2281,7 @@ refreshDetail = function()
         detailOffset = uiScroll.clamp(detailOffset, detailContentH, s.detailViewH)
         inner.content = ui.content(buildVarSlice(vitems.detail, detailOffset, s.detailViewH))   -- visible slice only
         inner.props.size = v2(s.detailVpW, detailContentH)   -- keep the explicit height in step (see buildDetail)
-        inner.props.position = v2(0, DETAIL_DY - detailOffset)
+        inner.props.position = v2(0, L.DETAIL_DY - detailOffset)
     end
     local bar = node(PATH.detailBar)
     if bar then
@@ -2136,7 +2305,7 @@ applyListOffset = function()
     listOffset = applyScrollPane {
         offset = listOffset, contentH = listContentH, viewH = s.listViewH, el = menu, find = nodeByPath,
         inner = PATH.listInner, thumb = PATH.listThumb,
-        renderSlice = function(off, vh) return buildQuestSlice(currentOrder, off, vh) end,   -- virtualized
+        renderSlice = function(off, vh) return buildQuestSlice(questView.order, off, vh) end,   -- virtualized
     }
 end
 
@@ -2145,7 +2314,7 @@ applyDetailOffset = function()
     local s = sizes()
     detailOffset = applyScrollPane {
         offset = detailOffset, contentH = detailContentH, viewH = s.detailViewH, el = menu, find = nodeByPath,
-        topMargin = DETAIL_DY,
+        topMargin = L.DETAIL_DY,
         inner = PATH.detailInner, thumb = PATH.detailThumb,
         renderSlice = function(off, vh) return buildVarSlice(vitems.detail, off, vh) end,   -- virtualized
     }
@@ -2170,7 +2339,7 @@ local function applyTopicPane(which)
         topicLOffset = applyScrollPane {
             offset = topicLOffset, contentH = topicLContentH, viewH = viewH, el = menu, find = nodeByPath,
             inner = PATH.topicListInner, thumb = PATH.topicListThumb,
-            renderSlice = function(off, vh) return buildTopicSlice(topicListCache or {}, off, vh, listW - BAR_W) end,
+            renderSlice = function(off, vh) return buildTopicSlice(topicListCache or {}, off, vh, listW - L.BAR_W) end,
         }
     else
         topicROffset = applyScrollPane {
@@ -2183,27 +2352,6 @@ end
 applyTopicLOffset = function() applyTopicPane('left') end
 applyTopicROffset = function() applyTopicPane('right') end
 
--- Records page scroll (mirror of applyTopicPane).
-function records.applyPane(which)
-    if not menu then return end
-    local s = sizes()
-    if which == 'left' then
-        local listW, _, viewH = records.dims(s)
-        records.lOffset = applyScrollPane {
-            offset = records.lOffset, contentH = records.lContentH, viewH = viewH, el = menu, find = nodeByPath,
-            inner = PATH.recordListInner, thumb = PATH.recordListThumb,
-            renderSlice = function(off, vh) return records.buildSlice(records.listCache or {}, off, vh, listW - BAR_W) end,
-        }
-    else
-        records.rOffset = applyScrollPane {
-            offset = records.rOffset, contentH = records.rContentH, viewH = s.contentH, el = menu, find = nodeByPath,
-            inner = PATH.recordDetailInner, thumb = PATH.recordDetailThumb,
-            renderSlice = function(off, vh) return buildVarSlice(vitems.recordR, off, vh) end,
-        }
-    end
-end
-function records.applyLeft() records.applyPane('left') end
-function records.applyRight() records.applyPane('right') end
 
 -- Resize: update sizes in place (keep node identity so the drag keeps mouse capture).
 applySizes = function()
@@ -2222,48 +2370,36 @@ applySizes = function()
         return p
     end
     setSize(v2(s.innerW, s.innerH), PATH.main)
-    setSize(v2(s.innerW, TITLE_H), PATH.titlebar)
-    setSize(v2(s.innerW, TAB_H), PATH.tabRow)
+    setSize(v2(s.innerW, L.TITLE_H), PATH.titlebar)
+    setSize(v2(s.innerW, L.TAB_H), PATH.tabRow)
     setSize(v2(s.innerW, s.contentH), PATH.panes)
-    setSize(v2(s.innerW, FOOTER_H), PATH.bottomBar)
+    setSize(v2(s.innerW, L.FOOTER_H), PATH.bottomBar)
     setSize(v2(s.listW, s.contentH), PATH.left)
     setSize(v2(s.listW, s.listViewH), PATH.leftBody)
-    setSize(v2(s.listW, STATUS_H), PATH.listStatus)   -- status strip follows the pane width
+    setSize(v2(s.listW, L.STATUS_H), PATH.listStatus)   -- status strip follows the pane width
     setSize(v2(s.listVpW, s.listViewH), PATH.listVp)
     setSize(v2(s.detailW, s.detailViewH), PATH.detail)
     setSize(v2(s.detailVpW, s.detailViewH), PATH.detailVp)
-    setSize(v2(BAR_W, s.listViewH), PATH.listBar)
-    setSize(v2(BAR_W, s.detailViewH), PATH.detailBar)
+    setSize(v2(L.BAR_W, s.listViewH), PATH.listBar)
+    setSize(v2(L.BAR_W, s.detailViewH), PATH.detailBar)
     -- search row widens with the pane; the search box (grow) + input (relativeSize) follow automatically
-    setSize(v2(s.listW, SEARCH_H), PATH.searchRow)
-    setSize(v2(s.listW, COMBO_H), subPath(PATH.left, 'filterRow'))   -- filter combo stretches like the search box (no-op when hidden)
-    -- Topics / Records: a divider drag skips the full panes rebuild (it would destroy the divider handle
-    -- mid-drag), so reflow the active side-pane page's inner nodes IN PLACE instead -- columns, search box,
-    -- list viewport, status strip and detail all follow the divider live, matching the Quests page. (Window
-    -- resize isn't a drag, so it takes the rebuild path below and never reaches this.)
-    if dividerDrag then
-        local SIDE = {
-            topics = { prefix = 'topic', leftCol = PATH.topicLeftCol, detail = PATH.topicDetail, dims = topicDims,
-                       refreshList = refreshTopicList,
-                       reflowDetail = function(w) buildTopicDetailNodes(allTopics(), w); applyTopicROffset() end },
-            records = { prefix = 'record', leftCol = PATH.recordLeftCol, detail = PATH.recordDetail, dims = records.dims,
-                        refreshList = records.refreshList,
-                        reflowDetail = function(w) records.detailNodes(records.all(), w); records.applyRight() end },
-        }
-        local side = SIDE[activePage]
-        if side then
-            local listW, detailW, listViewH = side.dims(s)
-            local p = side.prefix
-            setSize(v2(listW, s.contentH), side.leftCol)
-            setSize(v2(listW, SEARCH_H), subPath(side.leftCol, p .. 'SearchRow'))
-            setSize(v2(listW, listViewH), subPath(side.leftCol, p .. 'List'))
-            setSize(v2(listW - BAR_W, listViewH), subPath(side.leftCol, p .. 'List', p .. 'ListVp'))
-            setSize(v2(listW, STATUS_H), subPath(side.leftCol, p .. 'Status'))
-            setSize(v2(detailW, s.contentH), side.detail)
-            setSize(v2(detailW - BAR_W, s.contentH), subPath(side.detail, p .. 'DetailVp'))
-            side.refreshList()                  -- re-width the list rows (partial refresh keeps search focus)
-            side.reflowDetail(detailW - BAR_W)  -- re-wrap the detail paragraphs + re-slice at the new width
-        end
+    setSize(v2(s.listW, L.SEARCH_H), PATH.searchRow)
+    setSize(v2(s.listW, L.COMBO_H), subPath(PATH.left, 'filterRow'))   -- filter combo stretches like the search box (no-op when hidden)
+    -- Topics: a divider drag skips the full panes rebuild (it would destroy the divider handle
+    -- mid-drag), so reflow the page's inner nodes IN PLACE instead -- columns, search box, list viewport,
+    -- status strip and detail all follow the divider live, matching the Quests page. (Window resize isn't a
+    -- drag, so it takes the rebuild path below and never reaches this.)
+    if dividerDrag and activePage == 'topics' then
+        local listW, detailW, listViewH = topicDims(s)
+        setSize(v2(listW, s.contentH), PATH.topicLeftCol)
+        setSize(v2(listW, L.SEARCH_H), subPath(PATH.topicLeftCol, 'topicSearchRow'))
+        setSize(v2(listW, listViewH), subPath(PATH.topicLeftCol, 'topicList'))
+        setSize(v2(listW - L.BAR_W, listViewH), subPath(PATH.topicLeftCol, 'topicList', 'topicListVp'))
+        setSize(v2(listW, L.STATUS_H), subPath(PATH.topicLeftCol, 'topicStatus'))
+        setSize(v2(detailW, s.contentH), PATH.topicDetail)
+        setSize(v2(detailW - L.BAR_W, s.contentH), subPath(PATH.topicDetail, 'topicDetailVp'))
+        refreshTopicList()    -- re-width the list rows + re-wrap the detail (partial refresh keeps search focus)
+        applyTopicROffset()   -- re-clamp the detail scroll + its thumb for the re-wrapped height
     end
     -- root Widget + resize strips follow the outer size (root is plain-Widget; the 'frame' box autosizes to
     -- main). The strips hug the real window edges/corners via explicit geom (relativeSize won't resolve here).
@@ -2278,12 +2414,12 @@ applySizes = function()
             strip.props.size = size
         end
     end
-    closeFilterPopup()   -- the popover's position is window-relative; drop it rather than chase the resize
-    -- Stats/Topics rebuild their scroll panes on resize; the Quests page resizes in place EXCEPT
+    closePopup()   -- the popover's position is window-relative; drop it rather than chase the resize
+    -- Stats/Topics/Journal rebuild their scroll panes on resize; the Quests page resizes in place EXCEPT
     -- when the combo row is shown (its width isn't covered by the setSize calls above).
     -- Skip the rebuild while dragging the divider: a rebuild recreates the divider handle and kills its
     -- mouse capture mid-drag. The in-place setSize calls above move everything; a full reflow runs on release.
-    if not dividerDrag and (activePage == 'stats' or activePage == 'topics' or activePage == 'records' or (activePage == 'quests' and filterRowOn)) then
+    if not dividerDrag and (activePage == 'stats' or activePage == 'topics' or activePage == 'journal' or (activePage == 'quests' and filterRowOn)) then
         components.dismissTooltip()                  -- rows are rebuilt below; block a click's tooltip re-show
         local panes = node(PATH.panes)   -- rebuild the page at the new size
         if panes then panes.content = ui.content(buildPanesContent(s)) end
@@ -2311,7 +2447,7 @@ end
 -- Logical (UI-scaled) screen size. Widget coords are in logical pixels (engine applies the GUI
 -- scaling factor), and a layer's `.size` is the logical view size — the SAME space as our widgets.
 -- ui.screenSize() returns PHYSICAL resolution, so do NOT use it for layout (would break at scale!=1).
--- Forward-declared (top of file) so buildFilterPopup, defined earlier, can use it for the backdrop size.
+-- Forward-declared (top of file) so the popovers and resize strips, defined earlier, can use it.
 logicalScreen = function()
     local ok, size = pcall(function()
         for _, layer in ipairs(ui.layers) do
@@ -2338,8 +2474,8 @@ end
 local function clampGeom()
     local screen = logicalScreen()
     if not screen then return end
-    geom.w = math.max(MIN_W, math.min(geom.w, screen.x))
-    geom.h = math.max(MIN_H, math.min(geom.h, screen.y))
+    geom.w = math.max(L.MIN_W, math.min(geom.w, screen.x))
+    geom.h = math.max(L.MIN_H, math.min(geom.h, screen.y))
     geom.x = math.max(0, math.min(geom.x, screen.x - geom.w))
     geom.y = math.max(0, math.min(geom.y, screen.y - geom.h))
 end
@@ -2358,7 +2494,7 @@ end
 -- holds the 'Journal' mode). Idempotent.
 local function createMenu()
     if menu then return end
-    local openStart = core.getRealTime()   -- PERF (temp): time the whole open (build + first-time scans + refresh)
+    local openStart = core.getRealTime()   -- times the whole open (build + first-time scans + refresh) for the log
     -- Fresh data per open: drop the data layer's per-open cache so this open re-reads the journal (new
     -- entries / quests / topics appear). Within this open, every consumer reuses the newly-built results.
     I.QuestmanData.invalidate()
@@ -2370,7 +2506,13 @@ local function createMenu()
     end
     questListFrac = fracFromPct(settings:get('QuestListWidthPercent'), 40)
     topicListFrac = fracFromPct(settings:get('TopicListWidthPercent'), 30)
-    records.listFrac = fracFromPct(settings:get('RecordListWidthPercent'), 30)
+    local page = windowStore:get('activePage')
+    for _, p in ipairs(PAGES) do
+        if p == page then activePage = page end
+    end
+    local mode = windowStore:get('journalMode')
+    journal.mode = (mode == journalFeed.MODE_RECORDS) and mode or journalFeed.MODE_ALL
+    journal.limit = L.JOURNAL_PAGE   -- each open starts from the newest page
     local pos = windowStore:get('pos')
     if pos and pos.x then   -- remembered position
         geom.x, geom.y = pos.x, pos.y
@@ -2383,8 +2525,19 @@ local function createMenu()
     topicListCache = nil   -- drop the filtered view; the full topic list is re-read via the data cache (invalidated above)
     listOffset, detailOffset = 0, 0
     filterOffset = 0   -- reset only the popover scroll; the filter row + selection persist across close/open
-    closeFilterPopup()
+    closePopup()
+    -- While we're open, the built-in Inventory / Journal / QuickKeysMenu actions must not act on top of us:
+    -- omw/input/playercontrols.lua handles them without checking for another window, so (keyboard or pad)
+    -- QuickKeysMenu would push its menu over ours (our onUiModeChanged then closes questman) and Inventory
+    -- would drop our 'Interface' mode. A D-pad press can reach those bindings too: while a MyGUI edit box
+    -- has key focus (our search fields AND the read-only text paragraphs) SDL text input is active, and then
+    -- gamepadToGuiControl stops turning the D-pad into arrow keys (controllermanager.cpp) and lets it fall
+    -- through. This is the engine's API for taking those actions over; Journal is taken over below.
+    -- The flag has no getter, so destroyMenu simply clears it: a mod that keeps it set permanently would be
+    -- reset when questman closes.
+    I.Controls.overrideUiControls(true)
     menu = ui.create(build())
+    toolkitHints.update()
     -- assert both scrollbars' visibility deterministically (build sets it, but this guards the
     -- flaky "only one bar shows" case by re-evaluating both right after open)
     refreshList()
@@ -2409,9 +2562,11 @@ end
 local function destroyMenu()
     if not menu then return end
     components.dismissTooltip()   -- the tooltip is a separate element; it won't die with the menu (+ block re-show)
-    closeFilterPopup()         -- so is the options popover
+    closePopup()         -- so is the options popover
     menu:destroy()
     menu = nil
+    I.Controls.overrideUiControls(false)   -- hand the built-in UI actions back (see createMenu)
+    toolkitHints.update()                  -- menu is nil now -> clears our hints
 end
 
 local function open()
@@ -2435,6 +2590,16 @@ end
 local function toggle()
     if menu then close() else open() end
 end
+
+-- The Journal action while questman is open: createMenu muted the built-in handler, so take it over and
+-- close questman -- in both open modes, like the key closes the vanilla journal. Trigger handlers run in
+-- registration order (inputactions.cpp Registry::activate) and the built-in playercontrols.lua registers
+-- before us, so it has already run (and returned, still muted) by the time this closes the window. When
+-- the Journal key OPENS questman (the override), `menu` is still nil here: the built-in handler's addMode is
+-- applied later as a delayed action (uibindings.cpp _setUiModeStack -> addAction), so nothing closes it.
+input.registerTriggerHandler('Journal', async:callback(function()
+    if menu then close() end
+end))
 
 -- Single teardown path for every non-override close (X / Close / right-click / controller-B / Escape /
 -- open-key): the trigger only drops our 'Interface' mode; the destroy + pinned-window restore happen here.
@@ -2472,25 +2637,29 @@ if forced(FORCE_OVERRIDE_JOURNAL, settings:get('OverrideJournal')) then
 end
 
 -- Move the list selection by `delta` rows (keyboard up/down), auto-scrolling to keep it on screen.
+-- Steps over quests only (questView.quests), so group header rows are never selected.
 local function selectByOffset(delta)
-    if not menu or #currentOrder == 0 then return end
+    local quests = questView.quests
+    if not menu or #quests == 0 then return end
     local idx
-    for i, q in ipairs(currentOrder) do
+    for i, q in ipairs(quests) do
         if q.id == selectedId then idx = i; break end
     end
     if not idx then
-        idx = (delta > 0) and 1 or #currentOrder            -- nothing selected yet -> jump to an end
+        idx = (delta > 0) and 1 or #quests            -- nothing selected yet -> jump to an end
     else
-        idx = math.max(1, math.min(#currentOrder, idx + delta))
+        idx = math.max(1, math.min(#quests, idx + delta))
     end
-    local q = currentOrder[idx]
+    local q = quests[idx]
     if not q then return end
     selectedId = q.id
     I.QuestmanData.setLastViewed(q.id)
     detailOffset = 0
-    -- keep the selected row within the viewport
+    -- keep the selected row within the viewport; a group's first quest also brings its header into view
     local s = sizes()
-    local top, bottom = (idx - 1) * ROW_H, idx * ROW_H
+    local row = questView.rowIndex(q.id)
+    local headerAbove = questView.order[row - 1] and questView.order[row - 1].header
+    local top, bottom = (row - (headerAbove and 2 or 1)) * L.ROW_H, row * L.ROW_H
     if top < listOffset then listOffset = top
     elseif bottom > listOffset + s.listViewH then listOffset = bottom - s.listViewH end
     refreshList()   -- clamps + applies listOffset and updates the highlight
@@ -2520,39 +2689,21 @@ local function selectTopicByOffset(delta)
     I.QuestmanData.setLastViewedTopic(t.id)
     -- keep the selected row within the left-list viewport
     local _, _, listViewH = topicDims(sizes())
-    local top, bottom = (idx - 1) * TPC_ROW_H, idx * TPC_ROW_H
+    local top, bottom = (idx - 1) * L.TPC_ROW_H, idx * L.TPC_ROW_H
     if top < topicLOffset then topicLOffset = top
     elseif bottom > topicLOffset + listViewH then topicLOffset = bottom - listViewH end
     rebuildTopics()
 end
 
--- Records-page twin of selectTopicByOffset: move the selection up/down the (filtered) left list, keep it
--- in view, and rebuild.
-function records.selectByOffset(delta)
-    if not menu then return end
-    local list = records.listCache
-    if not list or #list == 0 then return end
-    local idx
-    for i, r in ipairs(list) do
-        if r.id == records.selected then idx = i; break end
-    end
-    if not idx then
-        idx = (delta > 0) and 1 or #list
-    else
-        idx = math.max(1, math.min(#list, idx + delta))
-    end
-    local r = list[idx]
-    if not r then return end
-    records.selected = r.id
-    records.rOffset = 0
-    local _, _, listViewH = records.dims(sizes())
-    local top, bottom = (idx - 1) * TPC_ROW_H, idx * TPC_ROW_H
-    if top < records.lOffset then records.lOffset = top
-    elseif bottom > records.lOffset + listViewH then records.lOffset = bottom - listViewH end
-    records.rebuild()
+-- ---- input -----------------------------------------------------------------
+-- Up/down (arrow keys, D-pad) on the active page: move the list selection, or scroll the journal (nothing to
+-- select there).
+local function moveSelection(delta)
+    if activePage == 'topics' then selectTopicByOffset(delta)
+    elseif activePage == 'journal' then journal.scrollBy(delta * L.WHEEL_STEP)
+    elseif activePage == 'quests' then selectByOffset(delta) end
 end
 
--- ---- input -----------------------------------------------------------------
 local function onKeyPress(key)
     local openKey = forced(FORCE_OPEN_KEY, settings:get('OpenMenuKey')) or input.KEY.X
     if key.code == openKey then
@@ -2563,13 +2714,11 @@ local function onKeyPress(key)
     -- popover is open, destroyMenu closes it too). If we emptied the mode stack in Lua instead, it would run
     -- *before* that engine action, which would then see no active GUI mode and pop up the main menu.
     elseif menu and key.code == input.KEY.DownArrow then
-        if activePage == 'topics' then selectTopicByOffset(1)
-        elseif activePage == 'records' then records.selectByOffset(1)
-        elseif activePage == 'quests' then selectByOffset(1) end
+        moveSelection(1)
     elseif menu and key.code == input.KEY.UpArrow then
-        if activePage == 'topics' then selectTopicByOffset(-1)
-        elseif activePage == 'records' then records.selectByOffset(-1)
-        elseif activePage == 'quests' then selectByOffset(-1) end
+        moveSelection(-1)
+    elseif menu and activePage == 'journal' and (key.code == input.KEY.LeftArrow or key.code == input.KEY.RightArrow) then
+        journal.toggleMode()
     elseif menu and key.code == input.KEY.Delete then
         if activePage == 'quests' and selectedId then   -- toggle hide on the selected quest
             I.QuestmanData.toggleHide(selectedId)
@@ -2584,6 +2733,17 @@ local function onKeyPress(key)
         I.QuestmanData.invalidate()
         refreshList()
         refreshDetail()
+    elseif menu and key.code == input.KEY.L and I.QuestmanDev then
+        -- DEV (dev_features only; inert in a shipped build): toggle fake journal dates for screenshots. The
+        -- data layer applies them when it copies the journal, so drop its cache and redraw the current tab.
+        I.QuestmanDev.toggleFakeDates()
+        I.QuestmanData.invalidate()
+        if activePage == 'journal' then
+            journal.rebuild()
+        else
+            refreshList()
+            refreshDetail()
+        end
     elseif menu and key.code == input.KEY.P and I.QuestmanDev and activePage == 'quests' and selectedId then
         -- DEV (dev_features only; inert in a shipped build): toggle the selected quest Finished/Unfinished to
         -- test the active/completed display. Flip the WHOLE name-group (all member ids share one log).
@@ -2601,11 +2761,10 @@ end
 -- no separate interaction model to maintain. Deliberately NOT handled here: A (stays the engine's
 -- gamepad-cursor left-click) and B (the engine's own exitCurrentGuiMode closes our Interface mode, which
 -- our UiModeChanged handler tears down). Sticks, the search box and filters remain cursor-only by design.
-local CONTROLLER_PAGES = { 'quests', 'topics', 'records', 'stats' }
 local function cycleControllerPage(delta)
-    for i, p in ipairs(CONTROLLER_PAGES) do
+    for i, p in ipairs(PAGES) do
         if p == activePage then
-            goToPage(CONTROLLER_PAGES[(i - 1 + delta) % #CONTROLLER_PAGES + 1])
+            goToPage(PAGES[(i - 1 + delta) % #PAGES + 1])
             return
         end
     end
@@ -2615,18 +2774,22 @@ local function onControllerButtonPress(id)
     if id == forced(FORCE_OPEN_BUTTON, settings:get('OpenMenuButton')) then toggle(); return end   -- the bound pad button opens/closes
     if not menu then return end
     local BTN = input.CONTROLLER_BUTTON
-    if id == BTN.DPadDown then          -- move selection down (mirrors the Down arrow)
-        if activePage == 'topics' then selectTopicByOffset(1)
-        elseif activePage == 'records' then records.selectByOffset(1)
-        elseif activePage == 'quests' then selectByOffset(1) end
-    elseif id == BTN.DPadUp then        -- move selection up (mirrors the Up arrow)
-        if activePage == 'topics' then selectTopicByOffset(-1)
-        elseif activePage == 'records' then records.selectByOffset(-1)
-        elseif activePage == 'quests' then selectByOffset(-1) end
+    if id == BTN.DPadDown then
+        moveSelection(1)
+    elseif id == BTN.DPadUp then
+        moveSelection(-1)
+    elseif (id == BTN.DPadLeft or id == BTN.DPadRight) and activePage == 'journal' then
+        journal.toggleMode()           -- mirrors the Left/Right arrows
     elseif id == BTN.RightShoulder then cycleControllerPage(1)   -- next tab
     elseif id == BTN.LeftShoulder then cycleControllerPage(-1)   -- previous tab
+    elseif id == BTN.Y and activePage == 'topics' then
+        -- Y bookmarks the selected topic (topics have no hide, so X does nothing here).
+        if selectedTopic then
+            I.QuestmanData.toggleTopicPin(selectedTopic)
+            refreshTopicList()
+        end
     elseif id == BTN.Y or id == BTN.X then
-        -- Y pins / X hides the selected quest -- Quests page only (Topics/Stats have neither).
+        -- Y pins / X hides the selected quest -- Quests page only (Stats has neither).
         if activePage == 'quests' and selectedId then
             if id == BTN.Y then I.QuestmanData.togglePin(selectedId)
             else I.QuestmanData.toggleHide(selectedId) end
@@ -2640,66 +2803,71 @@ local function onMouseWheel(vertical, horizontal)
     if not menu then return end
     if activePage == 'stats' then
         local viewH = sizes().contentH
-        statsOffset = uiScroll.clamp(statsOffset - (vertical or 0) * WHEEL_STEP, statsContentH, viewH)
+        statsOffset = uiScroll.clamp(statsOffset - (vertical or 0) * L.WHEEL_STEP, statsContentH, viewH)
         applyStatsOffset()
         return
     end
     if activePage == 'topics' then
         local s = sizes()
         if topicActive == 'right' then
-            topicROffset = uiScroll.clamp(topicROffset - (vertical or 0) * WHEEL_STEP, topicRContentH, s.contentH)
+            topicROffset = uiScroll.clamp(topicROffset - (vertical or 0) * L.WHEEL_STEP, topicRContentH, s.contentH)
             applyTopicROffset()
         else
             local _, _, viewH = topicDims(s)   -- left list viewport is shorter (search box above it)
-            topicLOffset = uiScroll.clamp(topicLOffset - (vertical or 0) * WHEEL_STEP, topicLContentH, viewH)
+            topicLOffset = uiScroll.clamp(topicLOffset - (vertical or 0) * L.WHEEL_STEP, topicLContentH, viewH)
             applyTopicLOffset()
         end
         return
     end
-    if activePage == 'records' then
-        local s = sizes()
-        if records.active == 'right' then
-            records.rOffset = uiScroll.clamp(records.rOffset - (vertical or 0) * WHEEL_STEP, records.rContentH, s.contentH)
-            records.applyRight()
-        else
-            local _, _, viewH = records.dims(s)
-            records.lOffset = uiScroll.clamp(records.lOffset - (vertical or 0) * WHEEL_STEP, records.lContentH, viewH)
-            records.applyLeft()
-        end
+    if activePage == 'journal' then
+        journal.scrollBy(-(vertical or 0) * L.WHEEL_STEP)
         return
     end
-    if popupEl then   -- the options popover is open: the wheel scrolls it
-        filterOffset = uiScroll.clamp(filterOffset - (vertical or 0) * WHEEL_STEP, filterContentH, popupViewH)
+    if popupEl then   -- a popover is open: the wheel scrolls it (the filter list), never the window below
+        filterOffset = uiScroll.clamp(filterOffset - (vertical or 0) * L.WHEEL_STEP, filterContentH, popupViewH)
         applyFilterOffset()
         return
     end
     if activePane == 'detail' then
-        detailOffset = uiScroll.clamp(detailOffset - (vertical or 0) * WHEEL_STEP, detailContentH, sizes().detailViewH)
+        detailOffset = uiScroll.clamp(detailOffset - (vertical or 0) * L.WHEEL_STEP, detailContentH, sizes().detailViewH)
         applyDetailOffset()
     else
-        listOffset = uiScroll.clamp(listOffset - (vertical or 0) * WHEEL_STEP, listContentH, sizes().listViewH)
+        listOffset = uiScroll.clamp(listOffset - (vertical or 0) * L.WHEEL_STEP, listContentH, sizes().listViewH)
         applyListOffset()
     end
 end
 
 return {
+    -- For other mods (asked for by the UI Toolkit author, who adapts controller input per open window):
+    -- whether questman's window is open. I.QuestmanData (questProvider) is the data side.
+    interfaceName = 'QuestmanWindow',
+    interface = {
+        version = 1,
+        isOpen = function() return menu ~= nil end,
+    },
     engineHandlers = {
         onKeyPress = onKeyPress,
         onControllerButtonPress = onControllerButtonPress,
         onMouseWheel = onMouseWheel,
         -- Persist the quest-list view state per save (data-layer state lives in questProvider; these are
-        -- purely UI): the "show completed + hidden" toggle, the active add-on/category/faction filter, and
-        -- whether the filter combo row is revealed. Restored on load so the list looks as the player left it.
+        -- purely UI): the "show completed + hidden" toggle, the active add-on/category/faction filter, the list
+        -- order, and whether the filter combo row is revealed. Restored on load so the list looks as the
+        -- player left it.
         -- (The list/detail split fractions live in cross-save settings now -- QuestListWidthPercent /
         -- TopicListWidthPercent -- not here; see createMenu + the divider's saveFrac.)
         onSave = function()
-            return { showAll = showAll, selectedFilter = selectedFilter, filterRowOn = filterRowOn }
+            return { showAll = showAll, selectedFilter = selectedFilter, filterRowOn = filterRowOn,
+                     sortMode = questView.sortMode }
         end,
         onLoad = function(data)
             if not data then return end
             showAll = data.showAll == true
             selectedFilter = data.selectedFilter   -- { axis, key, label } or nil
             filterRowOn = data.filterRowOn == true
+            questView.sortMode = 'date'
+            for _, mode in ipairs(questView.SORT_MODES) do
+                if data.sortMode == mode then questView.sortMode = mode end
+            end
         end,
     },
     eventHandlers = {

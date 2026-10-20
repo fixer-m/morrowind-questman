@@ -12,15 +12,11 @@ local hex = util.color.hex   -- built-in "rrggbb" (no '#', 6 chars) -> Color; re
 local WHITE = hex('ffffff')
 local GRAY = hex('808080')
 local HIGHLIGHT = hex('d9b873')
-local GREEN = hex('66c76b')
-local YELLOW = hex('f2d14d')
 
 local M = {}
 M.WHITE = WHITE
 M.GRAY = GRAY
 M.HIGHLIGHT = HIGHLIGHT
-M.GREEN = GREEN
-M.YELLOW = YELLOW
 
 -- util.color -> "RRGGBB" for inline MyGUI colour codes (#RRGGBB) that colour a span inside one Text.
 function M.colorHex(c)
@@ -266,33 +262,11 @@ end
 -- Static-label colour (dark brown) — distinctive on the dark panel and reads as a caption vs the value.
 M.LABEL_COLOR = hex('cc7d3e')
 
---- A header line (bigger).
-function M.header(text)
-    return {
-        template = I.MWUI.templates.textHeader,
-        props = { text = text or '', textSize = 20 },
-    }
-end
-
 --- A wrapping paragraph constrained to `width` (height auto). Used for journal entries.
 function M.paragraph(text, width)
     return {
         template = I.MWUI.templates.textParagraph,
         props = { text = text or '', size = v2(width or 300, 0) },
-    }
-end
-
---- Fixed single-line search box. `onChange(text)` fires on every keystroke.
-function M.searchBox(width, initial, onChange)
-    return {
-        name = 'search',
-        template = I.MWUI.templates.textEditLine,
-        props = { text = initial or '', size = v2(width or 200, 0) },
-        events = {
-            textChanged = async:callback(function(s)
-                if onChange then onChange(s) end
-            end),
-        },
     }
 end
 
@@ -399,10 +373,6 @@ local function borderFrame()
     end
     return pieces
 end
--- Public: the content pieces for a thin ornate frame, to spread into any fixed-size Widget's content
--- (e.g. the funnel button). Reuses the same 8-piece directional border as the scrollbar boxes.
-M.borderFrame = borderFrame
-
 -- Wrap child layouts with the thin frame and return a ready ui.content. The border is added LAST so it
 -- draws on top of the children (matching how the search/funnel/combo boxes layered their old 4-line
 -- border over their input/icon). Used by every bordered box so they all share one correct frame.

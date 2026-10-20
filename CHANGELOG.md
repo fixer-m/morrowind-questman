@@ -2,6 +2,19 @@
 
 All notable changes to Questman. One line per change — `[New]` feature, `[Change]` behaviour/looks, `[Fix]` bug fix.
 
+## 1.6
+
+- **[New]** Journal tab - replaces the Records tab: the whole journal as one feed, newest first, grouped by in-game day, with the quest name above its entries. Two modes: "All entries" and "Notes" (entries outside quests - the old Records content). Quest names are links (blue, like topic links) - click one to open the quest on the Quests tab. Loads in pages, so even huge journals open and scroll smoothly.
+- **[New]** Quests: sorting - a new button next to the filter opens the sort options: by date, by name, by faction, by category, or by faction and category. The grouped modes split the list under group headers (pinned quests always on top). The choice is remembered per save.
+- **[New]** Full-text search: the Quests and Topics search boxes now also find text inside journal entries and conversation lines. Search now starts from the 3rd letter (names used to be filtered from the first one). Title matches come first, then text matches, best first; matches are highlighted in the detail pane.
+- **[New]** Topics: bookmarks - Ctrl+click a topic (or the star in its title, or Y on a controller) to pin it to the top of the list.
+- **[New]** Settings: "Sort topics ignoring case" - an A-Z topic list instead of the vanilla order (capitalised names first, lowercase topics last).
+- **[New]** Compatibility: UI Toolkit shows Questman's controller button hints while the window is open. Other mods can check whether the window is open via the `I.QuestmanWindow` interface.
+- **[Change]** The window now reopens on the tab you last used even after restarting the game (before, only until you quit).
+- **[Fix]** Game hotkeys (inventory, quick keys, journal, etc.) no longer fire behind the open Questman window. The Journal key now closes Questman.
+- **[Fix]** Quests / Topics: the mouse wheel over the journal text in the detail pane scrolled the list instead of the details (it only worked over the empty space below the text).
+- **[Fix]** Quests: the detail pane stayed blank when no quest was selected - it now says so.
+
 ## 1.5
 
 - **[New]** Added support for "Poison Song" (Tamriel Rebuilt 26.08 Update). Two new factions: House Indoril and the Ordinators are now recognised and sorted into their own groups, each with a dedicated icon and its own row on the Stats page.

@@ -169,6 +169,15 @@ I.Settings.registerGroup {
             default = 'builtin',
         },
         {
+            -- Off = the vanilla journal's Topics order (case-sensitive: capitalized names first). Read by
+            -- questProvider.getTopics, which is rebuilt per open -> applies the next time the menu opens.
+            key = 'TopicSortIgnoreCase',
+            renderer = 'checkbox',
+            name = l10n('settings_topic_sort_ignore_case'),
+            description = l10n('settings_topic_sort_ignore_case_desc'),
+            default = false,
+        },
+        {
             key = 'ShowTechnicalInfo',
             renderer = 'checkbox',
             name = l10n('settings_tech_info'),
@@ -210,13 +219,6 @@ I.Settings.registerGroup {
             name = l10n('settings_topic_list_width'),
             description = l10n('settings_topic_list_width_desc'),
             default = 30,   -- % of the window width used by the Topics list pane
-        },
-        {
-            key = 'RecordListWidthPercent',
-            renderer = 'number',
-            name = l10n('settings_record_list_width'),
-            description = l10n('settings_record_list_width_desc'),
-            default = 30,   -- % of the window width used by the Records list pane
         },
         {
             key = 'ResetWindow',

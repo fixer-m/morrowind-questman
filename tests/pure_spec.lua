@@ -10,6 +10,7 @@ local uiScroll = require('scripts.questman.uiScroll')
 local uiResize = require('scripts.questman.uiResize')
 local givers = require('scripts.questman.givers')
 local questList = require('scripts.questman.questList')
+local journalFeed = require('scripts.questman.journalFeed')
 
 local failures = 0
 local function check(name, cond)
@@ -78,29 +79,190 @@ check('PC Anvil override -> Kingdom of Anvil / T_Cyr_KingdomAnvil', (function() 
 check('unknown id -> nil', questMetadata.get('zzz_unknown_mod') == nil)
 check('nil id -> nil', questMetadata.get(nil) == nil)
 
--- uiSearch.filter ------------------------------------------------------------
-local quests = {
-    { name = 'Dark Brotherhood Attacks', entries = { { text = 'an assassin attacked' } } },
-    { name = 'Mehrunes Dagon', entries = { { text = 'shrine in the north' } } },
-    { name = 'Fighters Guild Dues', entries = {} },
-}
-check('empty query returns all', #uiSearch.filter(quests, '') == 3)
-check('name substring (case-insens)', #uiSearch.filter(quests, 'dark') == 1)
-check('matches entry text', #uiSearch.filter(quests, 'assassin')[1] ~= nil
-      and uiSearch.filter(quests, 'assassin')[1].name == 'Dark Brotherhood Attacks')
-check('no match -> empty', #uiSearch.filter(quests, 'zzzzz') == 0)
-check('case-insensitive ascii name', #uiSearch.filter(quests, 'DARK') == 1)
--- Cyrillic case-insensitivity (string.lower can't fold these)
+-- uiSearch.lower: Cyrillic case-folding (string.lower can't fold these) -----------------------------------
 local A, a = string.char(0xD0, 0x90), string.char(0xD0, 0xB0)   -- А / а
 local YA, ya = string.char(0xD0, 0xAF), string.char(0xD1, 0x8F) -- Я / я
 check('lower folds Cyrillic А->а', uiSearch.lower(A) == a)
 check('lower folds Cyrillic Я->я', uiSearch.lower(YA) == ya)
 check('lower keeps ascii', uiSearch.lower('AbC') == 'abc')
-local ruQuests = { { name = A .. 'льмалексия' } }  -- "Альмалексия"
-check('cyrillic search lower matches', #uiSearch.filter(ruQuests, a) == 1)
-check('cyrillic search upper matches', #uiSearch.filter(ruQuests, A) == 1)
-check('searchEntries=false ignores entries',
-      #uiSearch.filter(quests, 'assassin', { searchEntries = false }) == 0)
+
+-- uiSearch.index / search: name hits first, then text hits ranked by occurrences / sqrt(words) ---------
+local function names(list)
+    local out = {}
+    for i, item in ipairs(list) do out[i] = item.name end
+    return table.concat(out, '|')
+end
+local function questText(q)
+    local parts = {}
+    for i, e in ipairs(q.entries or {}) do parts[i] = e.text end
+    return table.concat(parts, '\n')
+end
+local suranQuests = {
+    { name = 'Suran Trade', entries = { { text = 'goods' } } },
+    { name = 'Lost Ring', entries = { { text = 'go to Suran' } } },
+    { name = 'Velothi Debt', entries = { { text = 'Suran, then suran again' }, { text = 'SURAN' } } },
+    { name = 'Mehrunes Dagon', entries = { { text = 'shrine in the north' } } },
+}
+local suranIdx = uiSearch.index(suranQuests, questText)
+
+local emptyRes = uiSearch.search(suranIdx, '')
+check('search: empty query -> all by name, in input order',
+      names(emptyRes.byName) == 'Suran Trade|Lost Ring|Velothi Debt|Mehrunes Dagon' and #emptyRes.byText == 0)
+
+local suranRes = uiSearch.search(suranIdx, 'suran')
+check('search: name hits keep input order', names(suranRes.byName) == 'Suran Trade')
+check('search: text hits ranked by score', names(suranRes.byText) == 'Velothi Debt|Lost Ring')
+check('search: a name hit is not repeated in text hits', (function()
+    for _, q in ipairs(suranRes.byText) do if q.name == 'Suran Trade' then return false end end
+    return true end)())
+
+local tieQuests = {
+    { name = 'First', entries = { { text = 'ald ruhn' } } },
+    { name = 'Second', entries = { { text = 'ald ruhn' } } },
+}
+check('search: equal counts keep input order',
+      names(uiSearch.search(uiSearch.index(tieQuests, questText), 'ruhn').byText) == 'First|Second')
+
+-- score = hits / sqrt(words). The worked example from the design: a short quest all about Vivec beats the
+-- long main quest, which still beats a tiny one-off mention; a passing mention in a mid-size text is last.
+local function textOf(words, hits)
+    return string.rep('vivec ', hits) .. string.rep('word ', words - hits)
+end
+local vivecQuests = {   -- input order is the reverse of the expected ranking, so sorting must do the work
+    { name = 'C passing', entries = { { text = textOf(400, 1) } } },    -- 1 / 20    = 0.05
+    { name = 'D tiny', entries = { { text = textOf(50, 1) } } },        -- 1 / 7.07  = 0.14
+    { name = 'B main', entries = { { text = textOf(3000, 12) } } },     -- 12 / 54.8 = 0.22
+    { name = 'A short', entries = { { text = textOf(60, 3) } } },       -- 3 / 7.75  = 0.39
+}
+check('search: score divides hits by sqrt of the word count',
+      names(uiSearch.search(uiSearch.index(vivecQuests, questText), 'vivec').byText)
+          == 'A short|B main|D tiny|C passing')
+check('search: same hits in a longer text rank lower', names(uiSearch.search(uiSearch.index({
+    { name = 'Long', entries = { { text = textOf(200, 2) } } },
+    { name = 'Short', entries = { { text = textOf(20, 2) } } },
+}, questText), 'vivec').byText) == 'Short|Long')
+
+-- One floor for names AND text: a shorter query is no search yet (the whole list), so every further letter
+-- only narrows the results -- they never jump up when the text search kicks in.
+check('search: query under 3 chars is no search yet (whole list)', (function()
+    local r = uiSearch.search(suranIdx, 'su')   -- would match a name and texts
+    return names(r.byName) == 'Suran Trade|Lost Ring|Velothi Debt|Mehrunes Dagon' and #r.byText == 0 end)())
+check('isActive: from 3 chars', not uiSearch.isActive('') and not uiSearch.isActive('su')
+      and uiSearch.isActive('sur') and not uiSearch.isActive(nil))
+check('search: 3-char query reaches text', names(uiSearch.search(suranIdx, 'sur').byText) == 'Velothi Debt|Lost Ring')
+
+-- The threshold counts characters, not bytes: 'Су' is 2 chars (4 bytes) and must NOT reach text.
+local SU = string.char(0xD0, 0xA1) .. string.char(0xD1, 0x83)                 -- "Су"
+local SUR = SU .. string.char(0xD1, 0x80)                                      -- "Сур"
+local ruText = { { name = 'Kolco', entries = { { text = 'в ' .. SUR .. 'ан' } } } }
+local ruIdx = uiSearch.index(ruText, questText)
+check('search: 2 cyrillic chars are no search yet', #uiSearch.search(ruIdx, SU).byText == 0
+      and #uiSearch.search(ruIdx, SU).byName == 1 and not uiSearch.isActive(SU))
+check('search: 3 cyrillic chars reach text', #uiSearch.search(ruIdx, SUR).byText == 1)
+check('search: cyrillic text match is case-insensitive',
+      #uiSearch.search(ruIdx, uiSearch.lower(SUR)).byText == 1)
+check('search: ascii name match is case-insensitive', names(uiSearch.search(suranIdx, 'SURAN').byName) == 'Suran Trade')
+local ALM = A .. string.char(0xD0, 0xBB, 0xD1, 0x8C)                            -- "Аль"
+local ruNames = uiSearch.index({ { name = ALM .. 'малексия' } }, questText)     -- "Альмалексия"
+check('search: cyrillic name match is case-insensitive', #uiSearch.search(ruNames, uiSearch.lower(ALM)).byName == 1
+      and #uiSearch.search(ruNames, ALM).byName == 1)
+
+check('search: text is built lazily, once per item', (function()
+    local calls = 0
+    local idx = uiSearch.index(suranQuests, function(q) calls = calls + 1; return questText(q) end)
+    uiSearch.search(idx, 'oo')                 -- too short for text -> must not build
+    if calls ~= 0 then return false end
+    uiSearch.search(idx, 'suran')
+    uiSearch.search(idx, 'sura')
+    return calls == 3 end)())                  -- 'Suran Trade' is a name hit: its text is never needed
+
+check('search: text cache survives re-indexing the same items', (function()
+    local calls = 0
+    local function textOf(q) calls = calls + 1; return questText(q) end
+    uiSearch.search(uiSearch.index(suranQuests, textOf), 'suran')
+    uiSearch.search(uiSearch.index(suranQuests, textOf), 'suran')   -- e.g. a list refresh on click
+    return calls == 3 end)())
+
+-- uiSearch.lessIgnoreCase: the Topics tab's optional case-insensitive order -------------------------------
+local function sortedIgnoreCase(list)
+    local copy = { unpack(list) }
+    table.sort(copy, uiSearch.lessIgnoreCase)
+    return table.concat(copy, '|')
+end
+check('ignore case: lowercase topics mix in alphabetically',
+      sortedIgnoreCase({ 'my trade', 'Zainab', 'Balmora' }) == 'Balmora|my trade|Zainab')
+local DVEMER = string.char(0xD0, 0x94) .. 'vemer'    -- "Д..." (capital De)
+local APTEKA = string.char(0xD0, 0xB0) .. 'pteka'    -- "а..." (small a)
+check('ignore case: cyrillic folds too', sortedIgnoreCase({ DVEMER, APTEKA }) == APTEKA .. '|' .. DVEMER)
+check('ignore case: names equal but for case keep a fixed order',
+      uiSearch.lessIgnoreCase('Vivec', 'vivec') and not uiSearch.lessIgnoreCase('vivec', 'Vivec'))
+
+-- uiSearch.highlight: wrap matches in MyGUI #RRGGBB colour tags -------------------------------------------
+check('highlight: wraps every match, keeping the original case',
+      uiSearch.highlight('Suran is near suran.', 'SURAN', 'FFFFFF', 'CAA560')
+          == '#FFFFFFSuran#CAA560 is near #FFFFFFsuran#CAA560.')
+check('highlight: no match -> text unchanged',
+      uiSearch.highlight('Balmora', 'suran', 'FFFFFF', 'CAA560') == 'Balmora')
+check('highlight: query under 3 chars -> text unchanged',
+      uiSearch.highlight('Suran', 'su', 'FFFFFF', 'CAA560') == 'Suran')
+check('highlight: empty / nil query -> text unchanged',
+      uiSearch.highlight('Suran', '', 'FFFFFF', 'CAA560') == 'Suran'
+          and uiSearch.highlight('Suran', nil, 'FFFFFF', 'CAA560') == 'Suran')
+check('highlight: cyrillic match keeps the original case', (function()
+    local text = 'в ' .. SUR .. 'ан'                                   -- "в Суран"
+    local out = uiSearch.highlight(text, uiSearch.lower(SUR), 'FFFFFF', 'CAA560')
+    return out == 'в #FFFFFF' .. SUR .. '#CAA560ан' end)())
+check('highlight: a literal # is escaped once tags are added',
+      uiSearch.highlight('Suran #1', 'suran', 'FFFFFF', 'CAA560') == '#FFFFFFSuran#CAA560 ##1')
+
+-- journalFeed.rows: the Journal tab's newest-first feed (day headers, quest labels, mode filter) ------------
+-- A compact "kind:text" dump of the rows: day headers by day number, labels by quest id (or '-' for a
+-- non-quest record), entry texts as-is.
+local function feedDump(rows)
+    local out = {}
+    for i, r in ipairs(rows) do
+        if r.kind == 'day' then out[i] = 'day:' .. tostring(r.entry.day)
+        elseif r.kind == 'label' then out[i] = 'label:' .. (r.entry.questId or '-')
+        else out[i] = 'text:' .. r.entry.text end
+    end
+    return table.concat(out, ' ')
+end
+local feedEntries = {   -- oldest -> newest, as the journal stores them
+    { text = 'a1', day = 1, questId = 'A' },
+    { text = 'a2', day = 1, questId = 'A' },
+    { text = 'r1', day = 1, record = true },
+    { text = 'b1', day = 2, questId = 'B' },
+    { text = 'a3', day = 2, questId = 'A' },
+    { text = 'a4', day = 2, questId = 'A' },
+}
+local allFeed = journalFeed.rows(feedEntries, 'all')
+check('feed: newest first, a header per day, a label per quest run',
+      feedDump(allFeed.rows) ==
+      'day:2 label:A text:a4 text:a3 label:B text:b1 day:1 label:- text:r1 label:A text:a2 text:a1')
+check('feed: count = the mode total, nothing more to load', allFeed.count == 6 and allFeed.more == false)
+check('feed: a new day repeats the label of a continuing quest', feedDump(journalFeed.rows({
+    { text = 'a1', day = 1, questId = 'A' },
+    { text = 'a2', day = 2, questId = 'A' },
+}, 'all').rows) == 'day:2 label:A text:a2 day:1 label:A text:a1')
+local recFeed = journalFeed.rows(feedEntries, 'records')
+check('feed: records mode keeps only non-quest entries, without labels',
+      feedDump(recFeed.rows) == 'day:1 text:r1' and recFeed.count == 1)
+check('feed: an undated entry gets no header and joins the run above', feedDump(journalFeed.rows({
+    { text = 'x', questId = 'A' },
+    { text = 'a1', day = 1, questId = 'A' },
+}, 'all').rows) == 'day:1 label:A text:a1 text:x')
+check('feed: empty journal -> no rows', #journalFeed.rows({}, 'all').rows == 0)
+
+-- Lazy loading: `limit` caps the shown (newest) entries; count stays the mode's total, `more` says if
+-- older entries are left to load.
+local limited = journalFeed.rows(feedEntries, 'all', 3)
+check('feed: limit keeps only the newest entries',
+      feedDump(limited.rows) == 'day:2 label:A text:a4 text:a3 label:B text:b1')
+check('feed: limit keeps the total count and reports more', limited.count == 6 and limited.more == true)
+check('feed: no more once the limit covers everything', journalFeed.rows(feedEntries, 'all', 6).more == false
+      and journalFeed.rows(feedEntries, 'all').more == false)
+check('feed: limit counts records-mode entries only',
+      feedDump(journalFeed.rows(feedEntries, 'records', 1).rows) == 'day:1 text:r1')
 
 -- questList.sortByRecency ------------------------------------------------
 local toSort = {
@@ -214,6 +376,78 @@ check('giverForIds case-insensitive ids', givers.giverForIds(gm2, { 'DSMG4' }) =
 check('giverForIds none derivable -> nil', givers.giverForIds(gm2, { 'dsmg4c', 'nope' }) == nil)
 check('giverForIds empty / bad args -> nil',
       givers.giverForIds(gm2, {}) == nil and givers.giverForIds(nil, { 'x' }) == nil)
+
+-- questList.pinnedFirst: the Topics list's bookmarks float up, both groups keep their order --------------
+local function ids(list)
+    local out = {}
+    for i, t in ipairs(list) do out[i] = t.id end
+    return table.concat(out, '|')
+end
+local topicsToPin = { { id = 'a' }, { id = 'b', pinned = true }, { id = 'c' }, { id = 'd', pinned = true } }
+check('pinnedFirst: pinned first, each group in input order', ids(questList.pinnedFirst(topicsToPin)) == 'b|d|a|c')
+check('pinnedFirst: input not mutated', ids(topicsToPin) == 'a|b|c|d')
+check('pinnedFirst: nothing pinned -> same order', ids(questList.pinnedFirst({ { id = 'x' }, { id = 'y' } })) == 'x|y')
+
+-- questList.sortByName: pinned first, active before completed, then A-Z ignoring case (Cyrillic too) --------
+local toName = {
+    { id = 'b', name = 'beta' },
+    { id = 'P', name = 'zeta', pinned = true },
+    { id = 'D', name = 'Alpha', completed = true },
+    { id = 'A', name = 'Alpha' },
+    { id = 'ya', name = 'Яблоко' },
+    { id = 'ar', name = 'арбуз' },
+}
+check('sortByName: pinned, active A-Z, completed last', ids(questList.sortByName(toName)) == 'P|A|b|ar|ya|D')
+check('sortByName: input not mutated', toName[1].id == 'b')
+
+-- questList.groupByFaction: pinned group, factions A-Z by label, no-faction last; groups keep input order -----
+local toGroup = {
+    { id = 'p1', pinned = true, factionId = 'mg', faction = 'Mages Guild' },
+    { id = 'm1', factionId = 'mg', faction = 'Mages Guild' },
+    { id = 'n1' },
+    { id = 'f1', factionId = 'fg', faction = 'fighters guild' },
+    { id = 'm2', factionId = 'mg', faction = 'Mages Guild' },
+}
+local function groupDump(groups)
+    local out = {}
+    for i, g in ipairs(groups) do out[i] = tostring(g.key) .. ':' .. ids(g.quests) end
+    return table.concat(out, ' ')
+end
+check('groupByFaction: order + members',
+      groupDump(questList.groupByFaction(toGroup)) == questList.GROUP_PINNED .. ':p1 fg:f1 mg:m1|m2 '
+          .. questList.GROUP_NONE .. ':n1')
+check('groupByFaction: faction label carried', questList.groupByFaction(toGroup)[2].label == 'fighters guild')
+check('groupByFaction: empty groups omitted', groupDump(questList.groupByFaction({ { id = 'n1' } }))
+      == questList.GROUP_NONE .. ':n1')
+check('groupByFaction: empty input -> no groups', #questList.groupByFaction({}) == 0)
+
+-- questList.groupByFactionOrCategory: faction if any, else category; Main Quest, factions, categories (Stats
+-- order: alphabetical, Misc then Unknown last) -------------------------------------------------------------
+local toMix = {
+    { id = 'u1' },                                                    -- no category -> unknown
+    { id = 'x1', category = 'misc' },
+    { id = 'd1', category = 'daedric' },
+    { id = 'm1', category = 'guild_faction', factionId = 'mg', faction = 'Mages Guild' },
+    { id = 'q1', category = 'main_quest' },
+    { id = 'v1', category = 'vampire' },
+    { id = 'd2', category = 'daedric' },
+    { id = 'p1', category = 'daedric', pinned = true },
+}
+local function catLabel(key) return ({ daedric = 'Daedric', vampire = 'Vampire', misc = 'Misc', unknown = 'Unknown',
+                                       main_quest = 'Main' })[key] end
+local mixed = questList.groupByFactionOrCategory(toMix, catLabel)
+local function mixDump(groups)
+    local out = {}
+    for i, g in ipairs(groups) do out[i] = (g.label or g.key) .. ':' .. ids(g.quests) end
+    return table.concat(out, ' ')
+end
+check('groupByFactionOrCategory: order + members', mixDump(mixed)
+      == questList.GROUP_PINNED .. ':p1 Main:q1 Mages Guild:m1 Daedric:d1|d2 Vampire:v1 Misc:x1 Unknown:u1')
+toMix[#toMix + 1] = { id = 'g1', category = 'guild_faction', factionId = 'fg', faction = 'Fighters Guild' }
+catLabel = function(key) return ({ daedric = 'Daedric', vampire = 'Vampire', misc = 'Misc', unknown = 'Unknown',
+                                   main_quest = 'Main', guild_faction = 'Guilds' })[key] end
+check('groupByCategory: categories only, Stats order', mixDump(questList.groupByCategory(toMix, catLabel))
+      == questList.GROUP_PINNED .. ':p1 Main:q1 Daedric:d1|d2 Guilds:m1|g1 Vampire:v1 Misc:x1 Unknown:u1')
 
 -- questList ---------------------------------------------------------------
 local fq = {

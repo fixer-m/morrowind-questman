@@ -1,7 +1,7 @@
 # Questman: Quests Menu for Morrowind (OpenMW)
 
 Adds a new in-game menu for keeping track of your quests and journal entries. Press **X** (by default) to open it.
-Allows to search and filter, pin and hide quests, jump between related dialogue topics and much more.
+Allows to search, sort and filter, pin and hide quests, jump between related dialogue topics and much more.
 
 > **Requirements:** OpenMW **0.50+**  
 > **Included Translations:** English, Russian, Polish  
@@ -12,22 +12,23 @@ Allows to search and filter, pin and hide quests, jump between related dialogue 
 
 </div>
 
-<div align="center"><img src="https://i.imgur.com/Uxcyfyk.png" alt="Questman" /></div>  
+<div align="center"><img src="https://i.imgur.com/8vRpGTg.png" alt="Questman" /></div>  
 
 ## Main Features
 
-- **Quest list:** active quests at the top, sorted by recent updates, completed quests are grayed out and hidden by default
-- **Quest details:** shows addon, category, related faction, quest giver and all related journal entries (newest first)
-- **Search:** instant search for any quest or topic
+- **Quest list:** active quests at the top, sorted by recent updates or by name, or grouped by faction / category; completed quests are grayed out and hidden by default
+- **Quest details:** shows addon, category, related faction, quest giver and all related journal entries with their dates (newest first)
+- **Search:** instant search for any quest or topic — by name and inside journal entries and dialogue lines
 - **Filter quests:** filter your quests by add-on, category or faction — pick one from a drop-down list
 - **Pin quest:** pin quests so they stay at the top of the list (with **Ctrl-click** or star button)
 - **Hide quest:** hide quest from the list (with **Delete** or the eye button)
 - **Clickable topics:** related topics work as links, just like the links in the vanilla journal
-- **Topics tab:** a searchable index of every dialogue topic you've heard of, with topic-links
+- **Topics tab:** a searchable index of every dialogue topic you've heard of, with topic-links and bookmarks
+- **Journal tab:** the whole journal as one feed, grouped by day, with links to the quests
 - **Progress tab:** shows your progress so far by quest types, main quest and faction completion
-- **Gamepad support:** d-pad moves the list selection, LB/RB cycle tabs, Y pins / X hides the selected quest
+- **Gamepad support:** d-pad moves the list selection, LB/RB cycle tabs, Y pins / X hides the selected quest, button hints via [UI Toolkit](https://www.nexusmods.com/morrowind/mods/60303)
 - **Override Journal:** optional - will open the Questman menu instead of the vanilla Journal, can be enabled in plugin settings
-- **Support for [Tamriel Rebuilt](https://www.tamriel-rebuilt.org):** quest icons, factions and grouping (including Cyrodiil and Skyrim)
+- **Support for [Tamriel Rebuilt](https://www.tamriel-rebuilt.org):** quest icons, factions and grouping (including Cyrodiil, Skyrim and Poison Song)
 - **Support for [SSQN icons](https://www.nexusmods.com/morrowind/mods/53712):** ensure you have SSQN installed and enable the according option in settings
 
 ## Support for Russian localization (1C)
@@ -39,7 +40,7 @@ Allows to search and filter, pin and hide quests, jump between related dialogue 
 
 - **New quest icons:** brand new icons for every faction, category and addon
 - **Technical info:** optional — show the quest **id** and current **stage**
-- **Resizable window:** drag any corner or border to change the size. Position and size are remembered, and can be reset in settings.
+- **Resizable window:** drag any corner or border to change the size, drag the divider to resize the panes. Position and size are remembered, and can be reset in settings.
 - **Keyboard navigation:** Up/Down arrows move the selection, the list auto-scrolls to follow
 - **Virtualized list:** search and scrolling stay instant even with thousands of quests/topics
 
@@ -67,6 +68,8 @@ It can be installed like any other OpenMW Lua script plugin.
 - **Open menu key:** rebind the key that opens the window (default **X**).
 - **Window width / height:** the default size of the menu.
 - **Window position:** a **Reset** button to re-center the window next time it opens.
+- **Quest icons:** Questman's own icons, SSQN or SSQN+ (also add-on quests).
+- **Sort topics ignoring case:** an A-Z topic list instead of the vanilla order.
 - **Show technical info:** also show each quest's id and stage in the detail pane.
 - **Debug logging:** print `[questman]` diagnostics to openmw.log
 

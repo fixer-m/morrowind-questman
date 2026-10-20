@@ -2,8 +2,9 @@
 -- Responsibilities:
 --   * enumerate the player's quests, collapse them by name into the displayed GameQuest list
 --   * classify each (add-on / category / faction) via scripts/questman/questMetadata
---   * gather the player's journal entries, in order
---   * persist last-viewed / pins / hidden across saves
+--   * gather the player's journal entries, in order (per quest, and as the Journal tab's feed)
+--   * serve the heard dialogue topics and the related-topic links
+--   * persist last-viewed / pins / hidden / topic bookmarks across saves
 -- Exposes the `QuestmanData` interface consumed by ui.lua.
 
 local types = require('openmw.types')
@@ -17,9 +18,10 @@ local icons = require('scripts.questman.icons')
 local questMetadata = require('scripts.questman.questMetadata')
 local givers = require('scripts.questman.givers')
 local questList = require('scripts.questman.questList')
-local uiSearch = require('scripts.questman.uiSearch')   -- Cyrillic-aware lower() for topic-link matching
+local uiSearch = require('scripts.questman.uiSearch')   -- Cyrillic-aware lower(): topic-link matching, topic sort
 
--- Cross-save settings (registered in settings.lua). Read here for the quest-list icon set (IconPack).
+-- Cross-save settings (registered in settings.lua). Read here for the quest-list icon set (IconPack), the
+-- topic order (TopicSortIgnoreCase) and Debug.
 local settings = storage.playerSection('Settings/Questman/Options')
 
 -- Strip '@'/'#' hyperlink delimiters from journal/dialogue text (heavy in the RU release; left in, the
@@ -31,7 +33,6 @@ local function sanitizeText(s)
 end
 
 local l10n = core.l10n('Questman')
-local settings = storage.playerSection('Settings/Questman/Options')
 
 -- ---------------------------------------------------------------------------
 -- Quest classification (scripts/questman/questMetadata.lua): questMetadata.get(id) -> { addon, category,
@@ -124,9 +125,8 @@ local function addonRowLess(x, y)
     return x.label < y.label
 end
 
--- Category display order: Main Quest first; Miscellaneous then Unknown last; everything else alphabetical.
-local CAT_ORDER = { main_quest = 1, misc = 98, unknown = 99 }
-local function catRank(key) return CAT_ORDER[key] or 50 end
+-- Category display order: shared with the quest list's grouping, so it lives in questList.
+local catRank = questList.categoryRank
 local function catRowLess(x, y)
     local rx, ry = catRank(x.key), catRank(y.key)
     if rx ~= ry then return rx < ry end
@@ -152,6 +152,7 @@ local state = {
     lastViewedTopic = nil, -- topic id (Topics page)
     pinned = {},           -- set of questId -> true; pinned quests float to the top of the list
     hidden = {},           -- set of questId -> true; hidden quests are kept out of the list by default
+    pinnedTopics = {},     -- set of topic id -> true; bookmarked topics float to the top of the Topics list
 }
 
 -- ---------------------------------------------------------------------------
@@ -166,9 +167,8 @@ end
 local giverMapCache
 local function giverMap()
     if not giverMapCache then
-        -- PERF (temp): the dialogue scan is the plugin's heaviest one-time init (seconds on TR+PC+SHOTN), so
-        -- time it as "Init". Fires once per session -- today lazily on the first window open; after the planned
-        -- background prebuild it will run right after save-load, and this same line reports it.
+        -- The dialogue scan is the plugin's heaviest one-time init (seconds on TR+PC+SHOTN), so time it as
+        -- "Init". Fires once per session, normally from the background prebuild right after save-load.
         local t0 = core.getRealTime()
         giverMapCache = givers.resolve({ core.dialogue.topic, core.dialogue.greeting })
         dbg(('Init: %.0f ms'):format((core.getRealTime() - t0) * 1000))
@@ -209,8 +209,8 @@ local function giverFor(questId)
     return { id = gid, name = actorName(gid) }
 end
 
--- A record is a "real" quest if it has a journal NAME (unnamed journals are the notes surfaced on the
--- Records tab). Recognition deliberately does NOT also require an `isQuestFinished` stage.
+-- A record is a "real" quest if it has a journal NAME (unnamed journals are the notes surfaced by the
+-- Journal tab's "outside quests" mode). Recognition deliberately does NOT also require an `isQuestFinished` stage.
 -- WHY: `info.isQuestFinished` (and isQuestName/questStage) read the info's DATA *type* byte and return nil
 -- unless it equals "Journal". Some French/German "build" ESMs corrupt that byte on
 -- override infos (mType = 0xFFFFFF04 instead of 4), so those properties come back nil and the old finish
@@ -273,10 +273,10 @@ end
 -- shows up. buildCatalog is intentionally NOT here: it's immutable game data, cached permanently.
 -- The *Links maps memoize per-id results so reselecting a quest/topic is free (the keyword scan is the
 -- heaviest click-path work); cachedTopicNames is their shared, static input.
-local cachedQuests, cachedJournalEntries, cachedTopics, cachedRecords
+local cachedQuests, cachedJournalEntries, cachedTopics, cachedJournalFeed
 local cachedTopicNames, cachedQuestLinks, cachedTopicLinks
 local function invalidateCache()
-    cachedQuests, cachedJournalEntries, cachedTopics, cachedRecords = nil, nil, nil, nil
+    cachedQuests, cachedJournalEntries, cachedTopics, cachedJournalFeed = nil, nil, nil, nil
     cachedTopicNames, cachedQuestLinks, cachedTopicLinks = nil, nil, nil
 end
 
@@ -290,21 +290,24 @@ local function collectJournalEntries()
     local byQuest = {}
     local journal = types.Player.journal(self)
     local list = (journal and journal.journalTextEntries) or {}
+    local fake = I.QuestmanDev and I.QuestmanDev.fakeDates(list)   -- dev screenshots only (dev_features)
     for i, entry in ipairs(list) do
         local qid = entry.questId
         if qid then
             local key = qid:lower()
             local bucket = byQuest[key]
             if not bucket then
-                bucket = { id = qid, entries = {}, lastIndex = 0 }   -- id: original-case journal id (Records classify/title from it)
+                bucket = { id = qid, entries = {}, lastIndex = 0 }   -- id: original-case journal id
                 byQuest[key] = bucket
             end
-            -- month/dayOfMonth power the Records tab's per-entry date labels; unused by the Quests pipeline.
+            -- month/dayOfMonth power the date labels (quest detail, Journal tab).
+            local date = fake and fake[i] or entry
+            local index = fake and fake[i].index or i
             bucket.entries[#bucket.entries + 1] = {
-                text = sanitizeText(entry.text), day = entry.day,
-                month = entry.month, dayOfMonth = entry.dayOfMonth, index = i,
+                text = sanitizeText(entry.text), day = date.day,
+                month = date.month, dayOfMonth = date.dayOfMonth, index = index,
             }
-            bucket.lastIndex = i
+            bucket.lastIndex = index
         end
     end
     cachedJournalEntries = byQuest
@@ -787,12 +790,18 @@ local function getFilterOptions()
 end
 
 -- The dialogue topics the player has accumulated through conversation (the vanilla journal "Topics"
--- index): a map keyed by topic name in types.Player.journal(self).topics. Returns { { id, name }, ... }
--- sorted CASE-SENSITIVELY by name (raw byte order -> capitalised proper nouns first, lowercase generic
--- topics like "my trade" last), mirroring the journal's own Topics list.
--- Cached per open (see the per-open cache note above).
+-- index): a map keyed by topic name in types.Player.journal(self).topics. Returns
+-- { { id, name, entries, pinned }, ... } sorted by name: by default CASE-SENSITIVELY (raw byte order -> capitalised proper nouns first, lowercase
+-- generic topics like "my trade" last), mirroring the journal's own Topics list; with the
+-- TopicSortIgnoreCase setting, alphabetically regardless of case.
+-- Cached per open (see the per-open cache note above). The `pinned` flag is re-stamped on EVERY call (like
+-- getQuests), so a bookmark set mid-open shows at once although the sorted list came from the cache.
+local function stampTopicPins(topics)
+    for _, t in ipairs(topics) do t.pinned = state.pinnedTopics[t.id] == true end
+    return topics
+end
 local function getTopics()
-    if cachedTopics then return cachedTopics end
+    if cachedTopics then return stampTopicPins(cachedTopics) end
     local journal = types.Player.journal(self)
     local topics = (journal and journal.topics) or {}
     local list = {}
@@ -803,11 +812,17 @@ local function getTopics()
         -- release, e.g. " Двемер"); untrimmed it sorts them to the very top (space < letters). Trim the
         -- DISPLAY name only — `id` stays as the journal's own key so getTopicLines/links still match.
         local name = t.name and t.name:gsub('^%s*(.-)%s*$', '%1')
-        if name and name ~= '' then out[#out + 1] = { id = t.id, name = name } end
+        -- `entries` = the raw heard entries, kept so getTopicSearchText reads a topic directly instead of
+        -- re-scanning every topic by id (rawTopicEntries) -- that would be O(n^2) when searching them all.
+        if name and name ~= '' then out[#out + 1] = { id = t.id, name = name, entries = t.entries } end
     end
-    table.sort(out, function(a, b) return a.name < b.name end)
+    if settings:get('TopicSortIgnoreCase') then
+        table.sort(out, function(a, b) return uiSearch.lessIgnoreCase(a.name, b.name) end)
+    else
+        table.sort(out, function(a, b) return a.name < b.name end)
+    end
     cachedTopics = out
-    return out
+    return stampTopicPins(out)
 end
 
 -- The DISTINCT conversation lines the player heard for one topic (the first speaker of each unique line
@@ -839,6 +854,15 @@ end
 
 local function getTopicLines(topicId)
     return distinctTopicLines(rawTopicEntries(topicId))
+end
+
+-- A topic's searchable body for the Topics-tab text search: its distinct lines joined. Speaker names are
+-- left out, so searching an NPC's name doesn't list every topic they ever talked about. `topic` is an item
+-- of getTopics() (carries the raw `entries`).
+local function getTopicSearchText(topic)
+    local parts = {}
+    for i, ln in ipairs(distinctTopicLines(topic.entries)) do parts[i] = ln.text end
+    return table.concat(parts, '\n')
 end
 
 -- lowercased-id -> proper name for every topic the player has accumulated. Used to resolve the
@@ -1077,80 +1101,36 @@ local function getQuestLinks(questId)
 end
 
 -- ---------------------------------------------------------------------------
--- Records: journal records the player has entries for that AREN'T real quests (no QSTN name / never
--- shown in the Quests tab). Mirrors getTopics/getQuests, but sources the already-scanned journal
--- buckets (collectJournalEntries) so there's no second entry scan.
+-- Journal feed: the whole journal as one chronological list (the Journal tab). Sources the already-scanned
+-- journal buckets (collectJournalEntries) and the quest list, so there's no second entry scan.
 -- ---------------------------------------------------------------------------
 
--- Shorten `s` to about `maxChars` UTF-8 chars WITHOUT cutting a word: keep whole words until the next
--- would overflow the budget, then append " ...". The first word is always kept whole (never split), so a
--- lone over-long word is shown in full rather than mid-cut. Uses ASCII "..." not the "…" glyph -- the
--- Morrowind bitmap font has no U+2026 and renders it as a stray ".".
-local function truncate(s, maxChars)
-    if #utf8Chars(s) <= maxChars then return s end
-    local out, count = {}, 0
-    for word in s:gmatch('%S+') do
-        local wlen = #utf8Chars(word)
-        local sep = (count > 0) and 1 or 0
-        if count > 0 and count + sep + wlen > maxChars then break end
-        out[#out + 1] = word
-        count = count + sep + wlen
-    end
-    return table.concat(out, ' ') .. '...'
-end
-
--- A record's first info reads like a heading (a real title, e.g. "Blood Ties") rather than a narrative
--- entry: short and not ending in sentence punctuation.
-local function isTitleLike(s)
-    if not s or s == '' then return false end
-    if #utf8Chars(s) > 45 then return false end
-    return s:sub(-1):match('[%.%!%?;,]') == nil
-end
-
--- Row label for a record (title-else-snippet): the record definition's LOWEST-stage info text when it's
--- title-like (independent of what the player has accumulated), otherwise the earliest visible entry text
--- truncated. Never the raw id (technical, and always English even in the RU game).
-local function recordTitle(rec, entries)
-    if rec and rec.infos then
-        local bestStage, bestText
-        for _, info in ipairs(rec.infos) do
-            local st = info.questStage
-            if st and (not bestStage or st < bestStage) then bestStage, bestText = st, info.text end
-        end
-        if bestText then
-            local t = sanitizeText(bestText)
-            if isTitleLike(t) then return t end
-        end
-    end
-    return truncate((entries[1] and entries[1].text) or '', 30)
-end
-
--- The non-quest journal records the player has entries for, newest-activity first. Reuses the cached
--- journal buckets; a bucket is a "record" when its id isn't a member of any quest shown in the Quests tab
--- (classifying against getQuests avoids duplicating name-grouped quests whose non-finishing member ids
--- would fail a per-record isRealQuest check).
-local function getRecords()
-    if cachedRecords then return cachedRecords end
-    local questIds = {}
+-- Every journal entry, oldest -> newest, tagged with the quest it belongs to in the Quests tab (main id +
+-- name, so the tab can label it and open that quest). An entry whose journal id is in NO quest there is a
+-- "record" (record = true): a note outside quests, shown by the tab's Notes mode. Classifying
+-- against getQuests (not a per-id isRealQuest check) keeps name-grouped quests' non-finishing member ids
+-- inside their quest. Hidden quests stay in: this is the journal, hiding only affects the quest list.
+-- Cached per open.
+local function getJournalFeed()
+    if cachedJournalFeed then return cachedJournalFeed end
+    local questByMember = {}   -- lowercased member journal id -> its quest
     for _, q in ipairs(getQuests()) do
-        for _, mid in ipairs(q.ids or { q.id }) do questIds[mid:lower()] = true end
+        for _, mid in ipairs(q.ids or { q.id }) do questByMember[mid:lower()] = q end
     end
     local out = {}
     for key, bucket in pairs(collectJournalEntries()) do   -- key = lowercased journal id
-        if not questIds[key] then
+        local q = questByMember[key]
+        for _, e in ipairs(bucket.entries) do
             out[#out + 1] = {
-                id = bucket.id,
-                name = recordTitle(questRecord(bucket.id), bucket.entries),  -- display label (title-else-snippet)
-                entries = bucket.entries,   -- oldest -> newest; { text, day, month, dayOfMonth, index }
-                recency = bucket.lastIndex,
+                text = e.text, day = e.day, month = e.month, dayOfMonth = e.dayOfMonth, index = e.index,
+                questId = q and q.id, questName = q and q.name, record = (q == nil),
             }
         end
     end
-    table.sort(out, function(a, b)
-        if a.recency ~= b.recency then return a.recency > b.recency end
-        return a.id:lower() < b.id:lower()
-    end)
-    cachedRecords = out
+    -- `index` is the entry's position in journalTextEntries: the buckets split the journal by quest, this
+    -- merges it back into the journal's own order.
+    table.sort(out, function(a, b) return a.index < b.index end)
+    cachedJournalFeed = out
     return out
 end
 
@@ -1167,6 +1147,14 @@ local function togglePin(id)
     dbg('togglePin', id, '->', tostring(state.pinned[id] == true))
 end
 
+-- Toggle a topic's bookmark (ctrl+click / the detail-pane star / controller Y). Persisted per save. A
+-- separate set from the quest pins: topic ids and quest ids are different namespaces.
+local function toggleTopicPin(id)
+    if not id then return end
+    if state.pinnedTopics[id] then state.pinnedTopics[id] = nil else state.pinnedTopics[id] = true end
+    dbg('toggleTopicPin', id, '->', tostring(state.pinnedTopics[id] == true))
+end
+
 local function isHidden(id) return id ~= nil and state.hidden[id] == true end
 -- Toggle a quest's hidden flag (Del / the detail-pane eye button). Persisted per save.
 local function toggleHide(id)
@@ -1181,7 +1169,7 @@ end
 
 local function onSave()
     return { lastViewed = state.lastViewed, lastViewedTopic = state.lastViewedTopic,
-             pinned = state.pinned, hidden = state.hidden }
+             pinned = state.pinned, hidden = state.hidden, pinnedTopics = state.pinnedTopics }
 end
 
 local function onLoad(data)
@@ -1190,6 +1178,7 @@ local function onLoad(data)
         state.lastViewedTopic = data.lastViewedTopic
         state.pinned = data.pinned or {}
         state.hidden = data.hidden or {}
+        state.pinnedTopics = data.pinnedTopics or {}   -- absent in saves from before topic bookmarks
     end
     invalidateCache()   -- a loaded save has a different journal; drop any cached scans
     dbg('onLoad: lastViewed =', tostring(state.lastViewed))
@@ -1256,9 +1245,10 @@ return {
         getQuest = getQuest,
         getTopics = getTopics,
         getTopicLines = getTopicLines,
+        getTopicSearchText = getTopicSearchText,
         getTopicLinks = getTopicLinks,
         getQuestLinks = getQuestLinks,
-        getRecords = getRecords,
+        getJournalFeed = getJournalFeed,
         getStats = getStats,
         getFilterOptions = getFilterOptions,
         getLastViewed = getLastViewed,
@@ -1267,6 +1257,7 @@ return {
         setLastViewedTopic = setLastViewedTopic,
         isPinned = isPinned,
         togglePin = togglePin,
+        toggleTopicPin = toggleTopicPin,
         isHidden = isHidden,
         toggleHide = toggleHide,
     },
